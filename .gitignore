@@ -1,0 +1,65 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Environment files
+.env
+.env.*
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+*.spec
+
+# Logs and runtime
+logs/
+*.log
+*.out
+*.err
+
+# Testing / coverage / tooling caches
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editors/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+.directory
+
+# Large local datasets (keep placeholder if needed)
+data
+!data/.gitkeep
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
