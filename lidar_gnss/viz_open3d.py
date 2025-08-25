@@ -54,6 +54,7 @@ def visualize_scene_open3d(
     axes_size: float = 0.5,
     sphere_radius: float = 0.05,
     arrow_dims: Tuple[float, float, float, float] = (0.02, 0.04, 0.15, 0.06),  # cyl_r, cone_r, cyl_h, cone_h
+    highlight_arrow_scale: float = 5.0,
     line_color: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     point_size: Optional[float] = None,                 # None -> adaptive
     z_color_range: Optional[Tuple[float, float]] = None,  # None -> auto (min,max)
@@ -86,6 +87,7 @@ def visualize_scene_open3d(
     geometries: List[o3d.geometry.Geometry] = []
     marker_spheres: List[o3d.geometry.TriangleMesh] = []
     marker_arrows: List[o3d.geometry.TriangleMesh] = []
+    marker_centers: List[np.ndarray] = []
 
     if print_summary and summary:
         print(summary)
@@ -157,41 +159,44 @@ def visualize_scene_open3d(
 
     # ---- Markers (spheres) + orientation arrows ----
     current_highlight: Optional[int] = int(highlight_marker_index) if highlight_marker_index is not None else None
-    if marker_points is not None and marker_points.size > 0:
-        M = np.asarray(marker_points, dtype=np.float64)
-        has_quats = marker_quats_xyzw is not None and marker_quats_xyzw.shape[0] == M.shape[0]
-        for i in range(M.shape[0]):
-            center = M[i, :]
-            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=float(sphere_radius))
-            sphere.translate(center)
-            if current_highlight is not None and i == current_highlight:
-                sphere.paint_uniform_color([1.0, 0.0, 0.0])  # red
-            else:
-                sphere.paint_uniform_color([0.0, 0.0, 0.0])  # black
-            geometries.append(sphere)
-            marker_spheres.append(sphere)
 
-            if has_quats:
-                cyl_r, cone_r, cyl_h, cone_h = arrow_dims
-                arrow = o3d.geometry.TriangleMesh.create_arrow(
-                    cylinder_radius=float(cyl_r),
-                    cone_radius=float(cone_r),
-                    cylinder_height=float(cyl_h),
-                    cone_height=float(cone_h),
-                )
-                # Default arrow points +Z -> align +Z to +X by +90deg about +Y
-                R_align = o3d.geometry.get_rotation_matrix_from_axis_angle([0.0, np.pi / 2.0, 0.0])
-                arrow.rotate(R_align, center=(0.0, 0.0, 0.0))
-                q = np.asarray(marker_quats_xyzw[i, :], dtype=np.float64)
-                R = _quat_xyzw_to_R(q)
-                arrow.rotate(R, center=(0.0, 0.0, 0.0))
-                arrow.translate(center)
-                if current_highlight is not None and i == current_highlight:
-                    arrow.paint_uniform_color([1.0, 0.0, 0.0])
-                else:
-                    arrow.paint_uniform_color([0.0, 0.0, 0.0])
-                geometries.append(arrow)
-                marker_arrows.append(arrow)
+    M = np.asarray(marker_points, dtype=np.float64)
+    has_quats = marker_quats_xyzw is not None and marker_quats_xyzw.shape[0] == M.shape[0]
+    for i in range(M.shape[0]):
+        center = M[i, :]
+        marker_centers.append(center.copy())
+        sphere = o3d.geometry.TriangleMesh.create_sphere(radius=float(sphere_radius))
+        sphere.translate(center)
+        if current_highlight is not None and i == current_highlight:
+            sphere.paint_uniform_color([1.0, 0.0, 0.0])  # red
+            sphere.scale(float(highlight_arrow_scale), center=center)
+        else:
+            sphere.paint_uniform_color([0.0, 0.0, 0.0])  # black
+        geometries.append(sphere)
+        marker_spheres.append(sphere)
+
+        if has_quats:
+            cyl_r, cone_r, cyl_h, cone_h = arrow_dims
+            arrow = o3d.geometry.TriangleMesh.create_arrow(
+                cylinder_radius=float(cyl_r),
+                cone_radius=float(cone_r),
+                cylinder_height=float(cyl_h),
+                cone_height=float(cone_h),
+            )
+            # Default arrow points +Z -> align +Z to +X by +90deg about +Y
+            R_align = o3d.geometry.get_rotation_matrix_from_axis_angle([0.0, np.pi / 2.0, 0.0])
+            arrow.rotate(R_align, center=(0.0, 0.0, 0.0))
+            q = np.asarray(marker_quats_xyzw[i, :], dtype=np.float64)
+            R = _quat_xyzw_to_R(q)
+            arrow.rotate(R, center=(0.0, 0.0, 0.0))
+            arrow.translate(center)
+            if current_highlight is not None and i == current_highlight:
+                arrow.paint_uniform_color([1.0, 0.0, 0.0])
+                arrow.scale(float(highlight_arrow_scale), center=center)
+            else:
+                arrow.paint_uniform_color([0.0, 0.0, 0.0])
+            geometries.append(arrow)
+            marker_arrows.append(arrow)
 
     # ---- Build visualizer ----
     interactive = (pcd_ref is not None) and (scan_updater is not None or time_offset_updater is not None)
@@ -287,16 +292,36 @@ def visualize_scene_open3d(
                 return
             if current_highlight is not None and 0 <= current_highlight < len(marker_spheres):
                 marker_spheres[current_highlight].paint_uniform_color([0.0, 0.0, 0.0])
+                try:
+                    marker_spheres[current_highlight].scale(1.0 / float(highlight_arrow_scale),
+                                                            center=marker_centers[current_highlight])
+                except Exception:
+                    pass
                 if current_highlight < len(marker_arrows):
                     marker_arrows[current_highlight].paint_uniform_color([0.0, 0.0, 0.0])
+                    try:
+                        marker_arrows[current_highlight].scale(1.0 / float(highlight_arrow_scale),
+                                                              center=marker_centers[current_highlight])
+                    except Exception:
+                        pass
                 vis.update_geometry(marker_spheres[current_highlight])
                 if current_highlight < len(marker_arrows):
                     vis.update_geometry(marker_arrows[current_highlight])
             current_highlight = int(new_idx)
             if 0 <= current_highlight < len(marker_spheres):
                 marker_spheres[current_highlight].paint_uniform_color([1.0, 0.0, 0.0])
+                try:
+                    marker_spheres[current_highlight].scale(float(highlight_arrow_scale),
+                                                            center=marker_centers[current_highlight])
+                except Exception:
+                    pass
                 if current_highlight < len(marker_arrows):
                     marker_arrows[current_highlight].paint_uniform_color([1.0, 0.0, 0.0])
+                    try:
+                        marker_arrows[current_highlight].scale(float(highlight_arrow_scale),
+                                                              center=marker_centers[current_highlight])
+                    except Exception:
+                        pass
                 vis.update_geometry(marker_spheres[current_highlight])
                 if current_highlight < len(marker_arrows):
                     vis.update_geometry(marker_arrows[current_highlight])
