@@ -9,6 +9,7 @@ import pandas as pd
 from pyproj import Transformer
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, SymLogNorm, Normalize
+from matplotlib.patches import Ellipse
 from pathlib import Path
 
 
@@ -27,6 +28,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         required=False,
         help="Path to CSV (e.g., GPS_data.csv or Odom_data.csv)",
+    )
+    parser.add_argument(
+        "--ellipse",
+        action="store_true",
+        required=False,
+        help="Plot ellipse",
     )
     parser.add_argument(
         "--stride",
@@ -101,6 +108,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output image path for the single color-by plot (e.g., trajectory_color_by.png).",
     )
+    parser.add_argument(
+        "--single_plot",
+        action="store_true",
+        help="Plot subplots for each covariance component.",
+    )
     return parser
 
 
@@ -159,7 +171,7 @@ def _make_log_pos_norm(vals: np.ndarray) -> LogNorm:
     return LogNorm(vmin=vmin, vmax=vmax)
 
 
-def _plot_covariance_3x3(x_m: np.ndarray, y_m: np.ndarray, cov_arrays: List[np.ndarray], cov_cols: List[str], args) -> None:
+def _plot_covariance_2x3(x_m: np.ndarray, y_m: np.ndarray, cov_arrays: List[np.ndarray], cov_cols: List[str], args) -> None:
     if args.norm == "shared":
         all_vals = np.concatenate([c[np.isfinite(c)] for c in cov_arrays if c.size > 0]) if len(cov_arrays) else np.array([])
         shared_norm = _make_log_norm(all_vals, args.linthresh_frac)
@@ -167,7 +179,7 @@ def _plot_covariance_3x3(x_m: np.ndarray, y_m: np.ndarray, cov_arrays: List[np.n
     else:
         norms = [_make_log_norm(c[np.isfinite(c)], args.linthresh_frac) for c in cov_arrays]
 
-    fig, axes = plt.subplots(3, 3, figsize=(15, 8), sharex=True, sharey=True)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8), sharex=True, sharey=True)
     axes = axes.ravel()
 
     for i, (ax, cov_name, cov_vals) in enumerate(zip(axes, cov_cols, cov_arrays)):
@@ -264,6 +276,86 @@ def _plot_covariance_single(x_m: np.ndarray, y_m: np.ndarray, cov_arrays: List[n
             plt.savefig(save_path, dpi=150, bbox_inches="tight")
 
 
+def _plot_ellipses(
+    x_m: np.ndarray,
+    y_m: np.ndarray,
+    cov_x: np.ndarray,
+    cov_y: np.ndarray,
+    cov_z: np.ndarray,                 # <<< 추가: z-분산(=pos_cov_z / pos_conv_z)
+    stride: int,
+    out_path: str | None,
+    cmap: str = "viridis",
+    linthresh_frac: float = 1e-3,
+) -> None:
+    """
+    95% 타원을 그리되, 각 타원의 색을 cov_z(=pos_cov_z)로 로그 스케일 매핑.
+    - 0 또는 음수는 아주 작은 양수로 클리핑하여 로그 정규화에 사용.
+    - 컬러바를 함께 표시.
+    """
+    k = 2.447746830680816  # 95% confidence for 2D (sqrt(chi2.ppf(0.95, df=2)))
+
+    # 유효 샘플 마스크
+    mask = (
+        np.isfinite(x_m) & np.isfinite(y_m) &
+        np.isfinite(cov_x) & np.isfinite(cov_y) &
+        np.isfinite(cov_z)
+    )
+    x  = x_m[mask];  y  = y_m[mask]
+    cx = cov_x[mask]; cy = cov_y[mask]
+    cz = cov_z[mask]
+
+    cmap_obj = plt.get_cmap(cmap)
+    norm = _make_log_norm(cz, linthresh_frac)
+
+    fig, axes = plt.subplots(1, 1, figsize=(14, 6), sharex=True, sharey=True)
+
+    # 배경: 전체 경로(점/선)
+    axes.scatter(x, y, s=1, linewidths=0)
+    axes.plot(x, y, "-", color="k", linewidth=0.6, alpha=0.5)
+
+    # 타원들: 색은 cov_z에 로그 매핑
+    eps = 1e-12
+    for xi, yi, varx, vary, varz in zip(x[::stride], y[::stride], cx[::stride], cy[::stride], cz[::stride]):
+        if not (np.isfinite(varx) and np.isfinite(vary) and np.isfinite(varz)):
+            continue
+        sig_x = np.sqrt(max(0.0, float(varx)))
+        sig_y = np.sqrt(max(0.0, float(vary)))
+        a = k * sig_x
+        b = k * sig_y
+
+        # 색 계산 (RGBA), face/edge 투명도 다르게
+        z_for_color = max(float(varz), eps)
+        base_rgba = cmap_obj(norm(z_for_color))
+        face_rgba = (base_rgba[0], base_rgba[1], base_rgba[2], 0.18)
+        edge_rgba = (base_rgba[0], base_rgba[1], base_rgba[2], 0.9)
+
+        e = Ellipse(
+            (xi, yi),
+            width=2 * a, height=2 * b, angle=0.0,
+            facecolor=face_rgba,
+            edgecolor=edge_rgba,
+            linewidth=0.6,
+        )
+        axes.add_patch(e)
+
+    axes.set_title("95% Position Error Ellipses (colored by pos_cov_z, log scale)")
+    axes.set_xlabel("X (m)")
+    axes.grid(True, linestyle=":", linewidth=0.6)
+    axes.set_aspect("equal", adjustable="box")
+
+    # 컬러바
+    mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap_obj)
+    mappable.set_array([])
+    cb = fig.colorbar(mappable, ax=axes)
+    cb.set_label("pos_cov_z (log scale)")
+
+    fig.suptitle("Position Covariance Ellipses")
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+    if out_path:
+        plt.savefig(out_path, dpi=160, bbox_inches="tight")
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
 
@@ -277,7 +369,7 @@ def main() -> int:
 
     if args.out is None:
         args.out = Path(args.csv).parent / "trajectory_var_bev.png"
-    if args.out_ellipses is None:
+    if args.ellipse and args.out_ellipses is None:
         args.out_ellipses = Path(args.csv).parent / "trajectory_ellipses_bev.png"
 
     df = load_gps_csv(args.csv)
@@ -322,7 +414,22 @@ def main() -> int:
     x_plot = x_m[::stride]
     y_plot = y_m[::stride]
 
-    _plot_covariance_single(x_plot, y_plot, cov_arrays, cov_cols, args)
+    if args.single_plot:
+        _plot_covariance_single(x_plot, y_plot, cov_arrays, cov_cols, args)
+    else:
+        _plot_covariance_2x3(x_plot, y_plot, cov_arrays, cov_cols, args)
+    
+    if args.ellipse:
+        _plot_ellipses(
+            x_m, y_m,
+            cov_x=pd.to_numeric(df["pos_cov_x"], errors="coerce").to_numpy(dtype=float),
+            cov_y=pd.to_numeric(df["pos_cov_y"], errors="coerce").to_numpy(dtype=float),
+            cov_z=pd.to_numeric(df["pos_cov_z"], errors="coerce").to_numpy(dtype=float),
+            stride=int(args.ellipse_stride),
+            out_path=args.out_ellipses,
+            cmap=args.cmap,
+            linthresh_frac=args.linthresh_frac,
+        )
 
     # Show all
     plt.show()
