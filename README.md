@@ -14,7 +14,7 @@ python tools/flip_pitch_in_odom.py \
   --output /path/to/GPS/Odom_data_pitch_flipped.csv # 출력 csv 데이터
 ```
 - **LiDAR 데이터 전처리**를 통해 lidar_xyzi 형태로 변환하여야 함
-### 1) **BEV(상면) 궤적/공분산 시각화** — `tools/plot_gps_bev.py`
+### 1) **BEV 궤적/공분산 시각화** — `tools/plot_gps_bev.py`
 ```bash
 # 단일 CSV로 실행
 python tools/plot_gps_bev.py \
@@ -34,21 +34,18 @@ python tools/plot_gps_bev.py \
 
 ```bash
 python tools/visualize_trajectory.py \
-  --gps_csv /path/to/GPS/Odom_data.csv \
-  --lidar_dir /path/to/lidar_xyzi \
-  --lidar_index 700 \ # 시작 LiDAR 인덱스 지정
+  --gps_csv data/test0820_23_36/GPS/Odom_data_pitch_flipped.csv \
+  --lidar_dir data/test0820_23_36/lidar_xyzi \
+  --lidar_index 10 \
   --extrinsics_yaml extrinsics.yaml \
-  --time_offset 389000000 \ # nanosec
-  --offset_step_ns 10000000
-  --target_rate 10 \ # LiDAR hz
-  --stride 5 \ # 시각화 시 궤적에 점 찍는 timestep 간격
+  --target_rate 1~0 \
+  --stride 5 \
   --x_range 20 --y_range 20 \
-  --step_size 10 \ # 방향키 누를 때마다 움직이는 timestep 수
+  --step_size 10 \
   --verbose
 ```
 
 - **주요 옵션**
-  - **--time_offset <sec>**: LiDAR 타임스탬프에 더할 오프셋(나노초). 예: `389000000` -> LiDAR time stamp + time offset
   - **--x_range, --y_range**: XY 크롭(절대값 반경)
   - **--heading_from_pose**: CSV 자세 대신 궤적에서 XY heading 계산
 
@@ -59,12 +56,14 @@ python tools/visualize_trajectory.py \
 
 ```bash
 python tools/merge_lidar_gnss.py \
-  --gps_csv /path/to/GPS/Odom_data_pitch_flipped.csv \
-  --lidar_dir /path/to/lidar_xyzi \
+  --gps_csv data/test0820_23_36/GPS/Odom_data_pitch_flipped.csv \
+  --lidar_dir data/test0820_23_36/lidar_xyzi \
   --time_offset 389000000 \
+  --offset_step_ns 100000000 \
   --extrinsics_yaml extrinsics.yaml \
-  --start_index 430 \
+  --start_index 10 \
   --index_interval 10 \
+  --max_frames 5 \
   --x_range 30 --y_range 30 --z_range 2 \
   --target_rate 10 \
   --verbose
@@ -75,4 +74,4 @@ python tools/merge_lidar_gnss.py \
   - **--max_frames N**: 한 번에 병합할 최대 스캔 수
   - **--max_points N**: 병합 포인트 수 상한(초과 시 트림)
   - **--marker_stride K**: 궤적 마커/화살표 간격
-  - **--offset_step_ns 1e7**: ,/. 키당 시간 오프셋 스텝(ns)
+  - **--offset_step_ns**: ,/. 키당 시간 오프셋 스텝(ns)
