@@ -152,10 +152,6 @@ def update_heading_from_path(
       - yaw = atan2(dy, dx)
       - pitch = atan2(dz, hypot(dx, dy)) (양의 값이면 코가 위로)
       - roll은 0으로 고정
-
-    주의:
-      - min_speed는 '샘플 간 이동량' 임계값이며 diff_stride가 커지면 이동량도 커집니다.
-        diff_stride와 무관한 임계값을 원하면 dx,dy,dz를 diff_stride로 나눠 정규화하세요.
     """
     required = {"pos_x", "pos_y", "pos_z"}
     if not required.issubset(df.columns):
