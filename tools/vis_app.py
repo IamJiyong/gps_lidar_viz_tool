@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Callable
 
@@ -13,6 +14,7 @@ from PyQt5.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavToolbar
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
 
 # BEV utils
 from lidar_gnss.bev_viz_utils import (
@@ -30,9 +32,13 @@ import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 
 from PyQt5 import QtGui
+try:
+    from OpenGL.GL import glGetDoublev, glGetIntegerv, GL_MODELVIEW_MATRIX, GL_PROJECTION_MATRIX, GL_VIEWPORT
+except Exception:
+    glGetDoublev = None; glGetIntegerv = None; GL_MODELVIEW_MATRIX = None; GL_PROJECTION_MATRIX = None; GL_VIEWPORT = None
 
 
-EXTRINSICS_FIXED_PATH = "extrinsics.yaml"
+EXTRINSICS_FIXED_PATH = "/home/jiyong/Jiyong/Humzee/gps_vis_tool/extrinsics.yaml"
 
 
 # ---------------------- BEV Canvases ----------------------
@@ -49,7 +55,7 @@ class BEVClickableCanvas(FigureCanvas):
         self.fig.tight_layout(pad=0.5)
         self.setFocusPolicy(Qt.ClickFocus)
         self.setFocus()
-        self.setMouseTracking(True)  # <- 추가
+        self.setMouseTracking(True)
 
         # Dark theme for MPL figure/axes
         self._fig_bg = "#1e1f22"
@@ -70,14 +76,13 @@ class BEVClickableCanvas(FigureCanvas):
                      title: str, unit: str, cmap: str, norm, point_size: float,
                      start_xy: Optional[Tuple[float, float]] = None,
                      show_axes_labels: bool = False):
-        # 1) 남아있는 컬러바/보조 축 제거
+        # 1) remove previous colorbar/axes
         if self._cbar is not None:
             try:
                 self._cbar.remove()
             except Exception:
                 pass
             self._cbar = None
-        # Matplotlib이 컬러바용으로 추가했던 보조 axes들 제거
         for ax_extra in list(self.fig.axes):
             if ax_extra is not self.ax:
                 try:
@@ -85,14 +90,14 @@ class BEVClickableCanvas(FigureCanvas):
                 except Exception:
                     pass
 
-        # 2) 축 클리어 후 다크 테마 재적용
+        # 2) clear and re-apply theme
         self.ax.clear()
         self.fig.patch.set_facecolor(self._fig_bg)
         self.ax.set_facecolor(self._ax_bg)
         for spine in self.ax.spines.values():
             spine.set_color("w")
 
-        # 3) 본 플롯
+        # 3) plot
         cplot = np.clip(c, 1e-12, None)
         sc = self.ax.scatter(
             x, y, c=cplot, s=point_size, cmap=cmap, norm=norm,
@@ -117,7 +122,6 @@ class BEVClickableCanvas(FigureCanvas):
             self.ax.set_yticklabels([])
             self.ax.tick_params(colors="w")
 
-        # 4) 컬러바 새로 추가 (기존 축만 유지되도록)
         cb = self.fig.colorbar(sc, ax=self.ax, fraction=0.046, pad=0.04)
         cb.set_label(f"95% CI ({unit})", fontsize=8, color="w")
         cb.ax.tick_params(colors="w")
@@ -135,8 +139,8 @@ class BEVMainCanvas(BEVClickableCanvas):
     def __init__(self, parent=None):
         super().__init__(idx=-1, parent=parent, width=6.8, height=5.6, dpi=100)
         self.setMouseTracking(True)
-        self.fig.canvas.setMouseTracking(True)  # <- 추가
-        self.setAttribute(QtCore.Qt.WA_Hover, True)  # <- 추가
+        self.fig.canvas.setMouseTracking(True)
+        self.setAttribute(QtCore.Qt.WA_Hover, True)
         self._hover_annot = None
         self._data_for_hover = None  # (x, y, t_vals, ci_vals, unit, title)
         self._lidar_index_resolver: Optional[Callable[[float], Optional[int]]] = None
@@ -152,7 +156,6 @@ class BEVMainCanvas(BEVClickableCanvas):
         self._install_format_coord()
 
     def _install_format_coord(self):
-        # Matplotlib toolbar 우측 좌표 문자열 커스터마이즈
         def fmt(xp, yp):
             if self._data_for_hover is None or xp is None or yp is None:
                 try:
@@ -190,7 +193,7 @@ class BEVMainCanvas(BEVClickableCanvas):
         x, y, t_vals, ci_vals, unit, title = self._data_for_hover
         if x.size == 0 or event.xdata is None or event.ydata is None:
             return
-        cx, cy = float(event.xdata), float(event.ydata)
+            cx, cy = float(event.xdata), float(event.ydata)
         i = int(np.argmin((x - cx) ** 2 + (y - cy) ** 2))
         t = float(t_vals[i]); ci = float(ci_vals[i])
         lid_idx_txt = ""
@@ -205,7 +208,7 @@ class BEVMainCanvas(BEVClickableCanvas):
                 txt, xy=(cx, cy), xytext=(12, 12),
                 textcoords="offset points",
                 bbox=dict(boxstyle="round,pad=0.3", fc=self._ax_bg, alpha=0.85, ec="w"),
-                fontsize=12, color="w"  # <- 12pt로 확대
+                fontsize=12, color="w"
             )
         else:
             self._hover_annot.set_text(txt)
@@ -238,6 +241,7 @@ class PointCloudView(QtWidgets.QWidget):
         self.view.opts["distance"] = 50
         # Ensure the GL view receives key events and we can intercept them
         self.view.setFocusPolicy(Qt.StrongFocus)
+        self.view.setMouseTracking(True)
         self.view.installEventFilter(self)
         self.setFocusProxy(self.view)
 
@@ -256,30 +260,273 @@ class PointCloudView(QtWidgets.QWidget):
         self._has_topdown_set = False
         self._idx_stride = 1
         self._offset_stride_ms = 100
+        # continuous motion params
+        self._pan_speed_ratio = 1.0   # center shift per second as fraction of distance
+        self._zoom_rate_in_per_sec = 0.2  # distance *= 0.65 ** dt
+        self._zoom_rate_out_per_sec = 1.0 / self._zoom_rate_in_per_sec
+        self._dist_min = 0.05
+        self._dist_max = 1e6
+
+        # continuous motion state
+        self._pan_dx = 0  # -1,0,1
+        self._pan_dy = 0  # -1,0,1
+        self._zoom_dir = 0  # -1(out),0,+1(in)
+        self._motion_timer = QtCore.QTimer(self)
+        self._motion_timer.setInterval(16)  # ~60 FPS
+        self._motion_timer.timeout.connect(self._on_motion_tick)
+        self._last_motion_ts = time.perf_counter()
+
+        # profiling callback (set by MainWindow)
+        self.profile_cb: Optional[Callable[[str], None]] = None
+
+        # marker picking/hover state
+        self._marker_points = None
+        self._marker_ci_vals = None
+        self._marker_times = None
+        self._marker_lidar_idx = None
+        self._hover_last_idx = None
+        self._marker_dirs = None
+        self._marker_lengths = None
 
         # focus for key events
         self.setFocusPolicy(Qt.StrongFocus)
         self.setFocus()
 
+    def _start_motion_timer(self):
+        if not self._motion_timer.isActive():
+            self._last_motion_ts = time.perf_counter()
+            self._motion_timer.start()
+
+    def _stop_motion_timer_if_idle(self):
+        if self._pan_dx == 0 and self._pan_dy == 0 and self._zoom_dir == 0:
+            self._motion_timer.stop()
+
+    def _apply_zoom_step(self, dt: float) -> None:
+        dist = float(self.view.opts.get('distance', 1.0))
+        if self._zoom_dir > 0:
+            nd = max(self._dist_min, dist * (self._zoom_rate_in_per_sec ** dt))
+        else:
+            nd = min(self._dist_max, dist * (self._zoom_rate_out_per_sec ** dt))
+        self.view.opts['distance'] = nd
+        self.view.update()
+
+    def _on_motion_tick(self):
+        now = time.perf_counter()
+        dt = now - self._last_motion_ts
+        self._last_motion_ts = now
+        moved = False
+        # pan in camera plane
+        if self._pan_dx != 0 or self._pan_dy != 0:
+            dist = float(self.view.opts.get('distance', 1.0))
+            step = float(self._pan_speed_ratio) * max(1e-6, dist) * float(dt)
+            r, u = self._compute_right_up_vectors()
+            # Ensure left/right and up/down feel correct at pure BEV (near 90° elevation)
+            try:
+                az = float(self.view.opts.get('azimuth', 0.0))
+                el = float(self.view.opts.get('elevation', 0.0))
+            except Exception:
+                az, el = 0.0, 0.0
+            rad = np.pi / 180.0
+            near_topdown = abs(np.cos(el * rad)) < 1e-3
+            dx_eff = -self._pan_dx if near_topdown else self._pan_dx
+            dy_eff = -self._pan_dy if near_topdown else self._pan_dy
+            delta = dx_eff * step * r + dy_eff * step * u
+            c = self.view.opts.get('center', pg.Vector(0, 0, 0))
+            try:
+                newc = pg.Vector(float(c.x()) + float(delta[0]), float(c.y()) + float(delta[1]), float(c.z()) + float(delta[2]))
+            except Exception:
+                newc = pg.Vector(float(c[0]) + float(delta[0]), float(c[1]) + float(delta[1]), float(c[2]) + float(delta[2]))
+            self.view.opts['center'] = newc
+            moved = True
+        # zoom (ratio-based per dt)
+        if self._zoom_dir != 0:
+            self._apply_zoom_step(dt)
+            moved = True
+        if moved:
+            self.view.update()
+        else:
+            self._stop_motion_timer_if_idle()
+
+    def _compute_right_up_vectors(self) -> Tuple[np.ndarray, np.ndarray]:
+        az = float(self.view.opts.get('azimuth', 0.0))
+        el = float(self.view.opts.get('elevation', 0.0))
+        rad = np.pi / 180.0
+        azr = az * rad
+        elr = el * rad
+        # camera forward (from spherical angles)
+        f = np.array([
+            np.cos(elr) * np.cos(azr),
+            np.cos(elr) * np.sin(azr),
+            np.sin(elr)
+        ], dtype=np.float64)
+        # camera right and up in world
+        up_world = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        r = np.cross(f, up_world)
+        n = np.linalg.norm(r)
+        # Treat near-top-down as degenerate as well to keep pan camera-relative.
+        near_topdown = abs(np.cos(elr)) < 1e-3
+        if n < 1e-9 or near_topdown:
+            # Use azimuth to define a camera-right in the XY plane so pan stays camera-relative.
+            r = np.array([-np.sin(azr), np.cos(azr), 0.0], dtype=np.float64)
+            if self.profile_cb is not None:
+                try:
+                    self.profile_cb(f"right-up near-topdown; using az-based right | az={az:.2f}, el={el:.2f}")
+                except Exception:
+                    pass
+        else:
+            r = r / n
+        u = np.cross(r, f)
+        u = u / (np.linalg.norm(u) + 1e-12)
+        return r, u
+
+    def _project_points_to_screen(self, pts: np.ndarray) -> Optional[np.ndarray]:
+        # Returns (N,2) window coords or None if unavailable
+        try:
+            if glGetDoublev is None or glGetIntegerv is None:
+                return None
+            # ensure GL context
+            try:
+                self.view.makeCurrent()
+            except Exception:
+                pass
+            mv = np.array(glGetDoublev(GL_MODELVIEW_MATRIX), dtype=np.float64).reshape(4, 4).T
+            pr = np.array(glGetDoublev(GL_PROJECTION_MATRIX), dtype=np.float64).reshape(4, 4).T
+            vp = np.array(glGetIntegerv(GL_VIEWPORT), dtype=np.int32)
+            M = (mv @ pr)  # Note: order depends on OpenGL; we'll apply as v * M
+            # Convert points to clip and then to window
+            P = np.concatenate([pts.astype(np.float64), np.ones((pts.shape[0], 1), dtype=np.float64)], axis=1)
+            clip = P @ M  # row vectors
+            w = clip[:, 3:4]
+            w[w == 0] = 1e-12
+            ndc = clip[:, 0:3] / w
+            win = np.zeros((pts.shape[0], 2), dtype=np.float64)
+            win[:, 0] = vp[0] + (ndc[:, 0] + 1.0) * 0.5 * vp[2]
+            win[:, 1] = vp[1] + (ndc[:, 1] + 1.0) * 0.5 * vp[3]
+            return win
+        except Exception:
+            return None
+
     def eventFilter(self, obj, ev):
-        if obj is self.view and ev.type() == QtCore.QEvent.KeyPress:
-            key = ev.key()
-            if key == Qt.Key_A:
-                self.indexChanged.emit(-self._idx_stride); ev.accept(); return True
-            elif key == Qt.Key_D:
-                self.indexChanged.emit(+self._idx_stride); ev.accept(); return True
-            elif key == Qt.Key_Q:
-                self.offsetChangedMs.emit(-self._offset_stride_ms); ev.accept(); return True
-            elif key == Qt.Key_E:
-                self.offsetChangedMs.emit(+self._offset_stride_ms); ev.accept(); return True
+        if obj is self.view:
+            if ev.type() == QtCore.QEvent.MouseMove:
+                if self._marker_points is not None and self._marker_points.size > 0:
+                    pos = ev.pos()
+                    win = self._project_points_to_screen(self._marker_points)
+                    if win is None:
+                        if self.profile_cb:
+                            self.profile_cb("hover: projection unavailable (glGet*)")
+                        return False
+                    if win is not None:
+                        dx = win[:, 0] - float(pos.x())
+                        dy = (self.view.height() - win[:, 1]) - float(pos.y())  # align origins
+                        d2 = dx * dx + dy * dy
+                        i = int(np.argmin(d2)) if d2.size else None
+                        if i is not None and d2[i] < (12.0 ** 2):
+                            if i != self._hover_last_idx:
+                                self._hover_last_idx = i
+                                # build tooltip
+                                ci_txt = ""
+                                if self._marker_ci_vals is not None:
+                                    try:
+                                        ci_txt = f"ci={float(self._marker_ci_vals[i]):.3f}"
+                                    except Exception:
+                                        ci_txt = ""
+                                idx_txt = ""
+                                if self._marker_lidar_idx is not None:
+                                    try:
+                                        idx_txt = f"lidar_idx={int(self._marker_lidar_idx[i])}"
+                                    except Exception:
+                                        idx_txt = ""
+                                t_txt = ""
+                                if self._marker_times is not None:
+                                    try:
+                                        t_txt = f"t={float(self._marker_times[i]):.4f} s"
+                                    except Exception:
+                                        t_txt = ""
+                                parts = [p for p in [t_txt, ci_txt, idx_txt] if p]
+                                if parts:
+                                    if self.profile_cb:
+                                        self.profile_cb(f"hover hit i={i}, d={np.sqrt(d2[i]):.1f}px | {' | '.join(parts)}")
+                                    QtWidgets.QToolTip.showText(ev.globalPos(), "\n".join(parts), self.view)
+                        else:
+                            self._hover_last_idx = None
+                return False
+            if ev.type() == QtCore.QEvent.MouseButtonPress:
+                if self._marker_points is not None and self._marker_points.size > 0:
+                    pos = ev.pos()
+                    win = self._project_points_to_screen(self._marker_points)
+                    if win is None:
+                        if self.profile_cb:
+                            self.profile_cb("click: projection unavailable (glGet*)")
+                        return False
+                    if win is not None:
+                        dx = win[:, 0] - float(pos.x())
+                        dy = (self.view.height() - win[:, 1]) - float(pos.y())
+                        d2 = dx * dx + dy * dy
+                        i = int(np.argmin(d2)) if d2.size else None
+                        if self.profile_cb and i is not None:
+                            self.profile_cb(f"click nearest i={i}, d={np.sqrt(d2[i]):.1f}px")
+                        if i is not None and d2[i] < (12.0 ** 2):
+                            if self._marker_lidar_idx is not None:
+                                try:
+                                    if self.profile_cb:
+                                        self.profile_cb(f"click jump to lidar_idx={int(self._marker_lidar_idx[i])}")
+                                    self.indexChanged.emit(int(self._marker_lidar_idx[i]))
+                                    ev.accept(); return True
+                                except Exception:
+                                    pass
+            if ev.type() == QtCore.QEvent.KeyPress:
+                key = ev.key(); mods = ev.modifiers()
+                # Shift + arrows => start/adjust pan
+                if mods & Qt.ShiftModifier and key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+                    self._pan_dx = 1 if key == Qt.Key_Left else (-1 if key == Qt.Key_Right else self._pan_dx)
+                    self._pan_dy = 1 if key == Qt.Key_Up else (-1 if key == Qt.Key_Down else self._pan_dy)
+                    self._start_motion_timer()
+                    ev.accept(); return True
+                # Ctrl + arrows => start/adjust zoom (apply immediate step for responsiveness)
+                if mods & Qt.ControlModifier and key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+                    self._zoom_dir = 1 if key in (Qt.Key_Up, Qt.Key_Right) else -1
+                    # immediate multiplicative step (assume ~1/60 s)
+                    self._apply_zoom_step(1.0/60.0)
+                    self.view.update()
+                    self._start_motion_timer()
+                    ev.accept(); return True
+                # Our existing custom keys (a/d/q/e)
+                if key == Qt.Key_A:
+                    self.indexChanged.emit(-self._idx_stride); ev.accept(); return True
+                elif key == Qt.Key_D:
+                    self.indexChanged.emit(+self._idx_stride); ev.accept(); return True
+                elif key == Qt.Key_Q:
+                    self.offsetChangedMs.emit(-self._offset_stride_ms); ev.accept(); return True
+                elif key == Qt.Key_E:
+                    self.offsetChangedMs.emit(+self._offset_stride_ms); ev.accept(); return True
+            elif ev.type() == QtCore.QEvent.KeyRelease:
+                key = ev.key(); mods = ev.modifiers()
+                if key in (Qt.Key_Left, Qt.Key_Right):
+                    if self._pan_dx != 0:
+                        self._pan_dx = 0
+                if key in (Qt.Key_Up, Qt.Key_Down):
+                    if self._pan_dy != 0:
+                        self._pan_dy = 0
+                if key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+                    self._zoom_dir = 0
+                self._stop_motion_timer_if_idle()
         return super().eventFilter(obj, ev)
 
-    def set_strides(self, idx_stride: int, offset_stride_ms: int):
-        self._idx_stride = max(1, int(idx_stride))
-        self._offset_stride_ms = int(offset_stride_ms)
-
     def keyPressEvent(self, ev):
-        key = ev.key()
+        key = ev.key(); mods = ev.modifiers()
+        # also handle here if eventFilter didn't
+        if mods & Qt.ShiftModifier and key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            self._pan_dx = 1 if key == Qt.Key_Left else (-1 if key == Qt.Key_Right else self._pan_dx)
+            self._pan_dy = 1 if key == Qt.Key_Up else (-1 if key == Qt.Key_Down else self._pan_dy)
+            self._start_motion_timer()
+            ev.accept(); return
+        if mods & Qt.ControlModifier and key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            self._zoom_dir = 1 if key in (Qt.Key_Up, Qt.Key_Right) else -1
+            self._apply_zoom_step(1.0/60.0)
+            self.view.update()
+            self._start_motion_timer()
+            ev.accept(); return
         if key == Qt.Key_A:
             self.indexChanged.emit(-self._idx_stride); ev.accept(); return
         elif key == Qt.Key_D:
@@ -288,7 +535,22 @@ class PointCloudView(QtWidgets.QWidget):
             self.offsetChangedMs.emit(-self._offset_stride_ms); ev.accept(); return
         elif key == Qt.Key_E:
             self.offsetChangedMs.emit(+self._offset_stride_ms); ev.accept(); return
-        super().keyPressEvent(ev)
+            super().keyPressEvent(ev)
+
+    def keyReleaseEvent(self, ev):
+        key = ev.key()
+        if key in (Qt.Key_Left, Qt.Key_Right):
+            self._pan_dx = 0
+        if key in (Qt.Key_Up, Qt.Key_Down):
+            self._pan_dy = 0
+        if key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            self._zoom_dir = 0
+        self._stop_motion_timer_if_idle()
+        super().keyReleaseEvent(ev)
+
+    def set_strides(self, idx_stride: int, offset_stride_ms: int):
+        self._idx_stride = max(1, int(idx_stride))
+        self._offset_stride_ms = int(offset_stride_ms)
 
     def set_topdown_camera(self):
         # top-down (look from +Z towards -Z)
@@ -354,13 +616,18 @@ class PointCloudView(QtWidgets.QWidget):
                                  start_point: Optional[np.ndarray],
                                  marker_points: np.ndarray,
                                  marker_dirs: np.ndarray,
-                                 highlight_idx: Optional[int]):
+                                 highlight_idx: Optional[int],
+                                 marker_colors: Optional[np.ndarray] = None,
+                                 marker_ci_vals: Optional[np.ndarray] = None,
+                                 marker_times: Optional[np.ndarray] = None,
+                                 marker_lidar_indices: Optional[np.ndarray] = None):
         if gl is None:
             return
 
         # Polyline (밝은 노란색, 시인성 향상)
         if polyline_xyz is not None and polyline_xyz.shape[0] >= 2:
-            plt3d = gl.GLLinePlotItem(pos=polyline_xyz, color=(0.85, 0.85, 0.20, 1.0),
+            # 밝은 회색으로 변경
+            plt3d = gl.GLLinePlotItem(pos=polyline_xyz, color=(0.80, 0.80, 0.80, 1.0),
                                       width=2.0, antialias=True)
             self.polyline_item = plt3d
             self.view.addItem(plt3d)
@@ -371,24 +638,43 @@ class PointCloudView(QtWidgets.QWidget):
             self.start_sphere = sp
             self.view.addItem(sp)
 
-        # Marker arrows (cones) — 일반 마커: 밝은 청록
+        # Marker arrows (cones) — 일반 마커: BEV 색상과 동일한 매핑 사용
         self.marker_meshes.clear()
         if marker_points is not None and marker_dirs is not None and marker_points.shape[0] == marker_dirs.shape[0]:
             for i in range(marker_points.shape[0]):
                 p = marker_points[i]
                 d = marker_dirs[i]
-                cone = self._make_cone(p, d, length=0.8, radius=0.06, color=(0.20, 0.85, 0.95, 1.0))
+                col = (0.20, 0.85, 0.95, 1.0)
+                if marker_colors is not None and i < marker_colors.shape[0]:
+                    c = marker_colors[i]
+                    col = (float(c[0]), float(c[1]), float(c[2]), float(c[3]) if c.shape[0] >= 4 else 1.0)
+                cone = self._make_cone(p, d, length=0.8, radius=0.06, color=col)
                 cone.setGLOptions('opaque')  # 깊이/불투명(기본)
                 self.marker_meshes.append(cone)
                 self.view.addItem(cone)
 
-        # Highlight arrow — 선명한 주황/빨강, 가장 마지막에 추가 + additive로 최상단 가시성
+        # Highlight arrow — 현재 시점 화살표는 빨간색 고정, additive로 최상단 가시성
         if highlight_idx is not None and 0 <= highlight_idx < marker_points.shape[0]:
             p = marker_points[highlight_idx]
             d = marker_dirs[highlight_idx]
-            self.highlight_mesh = self._make_cone(p, d, length=1.2, radius=0.08, color=(1.0, 0.35, 0.05, 1.0))
+            # 순수한 빨간색
+            hcol = (1.0, 0.0, 0.0, 1.0)
+            self.highlight_mesh = self._make_cone(p, d, length=1.2, radius=0.08, color=hcol)
             self.highlight_mesh.setGLOptions('additive')  # 블렌딩 우선으로 다른 메쉬 위에 보이게
             self.view.addItem(self.highlight_mesh)
+
+        # store marker metadata for picking/hover
+        self._marker_points = marker_points.copy() if marker_points is not None else None
+        self._marker_ci_vals = marker_ci_vals.copy() if marker_ci_vals is not None else None
+        self._marker_times = marker_times.copy() if marker_times is not None else None
+        self._marker_lidar_idx = marker_lidar_indices.copy() if marker_lidar_indices is not None else None
+        self._hover_last_idx = None
+        if self.profile_cb:
+            try:
+                n = 0 if self._marker_points is None else self._marker_points.shape[0]
+                self.profile_cb(f"markers set | N={n}, has_ci={self._marker_ci_vals is not None}, has_times={self._marker_times is not None}, has_lidar_idx={self._marker_lidar_idx is not None}")
+            except Exception:
+                pass
 
         if not self._has_topdown_set:
             self.set_topdown_camera()
@@ -398,6 +684,7 @@ class PointCloudView(QtWidgets.QWidget):
             return
         if xyz is None or xyz.size == 0:
             return
+        t0 = time.perf_counter()
         z = xyz[:, 2]
         zmin = float(np.min(z)) if z.size else 0.0
         zmax = float(np.max(z)) if z.size else 1.0
@@ -405,18 +692,23 @@ class PointCloudView(QtWidgets.QWidget):
             zn = (z - zmin) / (zmax - zmin)
         else:
             zn = np.zeros_like(z)
-        colors = np.zeros((xyz.shape[0], 4), dtype=np.float32)
-        for i, h in enumerate((2.0 / 3.0) * (1.0 - zn)):
-            import colorsys
-            r, g, b = colorsys.hsv_to_rgb(float(h), 1.0, 1.0)
-            colors[i] = [r, g, b, 1.0]
+        # Vectorized HSV->RGB
+        hues = (2.0 / 3.0) * (1.0 - zn)
+        hsv = np.stack([hues, np.ones_like(hues), np.ones_like(hues)], axis=1)
+        rgb = mcolors.hsv_to_rgb(hsv).astype(np.float32)
+        colors = np.concatenate([rgb, np.ones((rgb.shape[0], 1), dtype=np.float32)], axis=1)
+        if self.profile_cb:
+            self.profile_cb(f"color mapping: {(time.perf_counter()-t0)*1000:.1f} ms for {xyz.shape[0]} pts")
 
         # 아주 작게: 픽셀 모드 + 작은 사이즈
+        t1 = time.perf_counter()
         sp = gl.GLScatterPlotItem(pos=xyz.astype(np.float32), color=colors, size=1.0, pxMode=True)
         if self.cloud_item is not None:
             self.view.removeItem(self.cloud_item)
         self.cloud_item = sp
         self.view.addItem(sp)
+        if self.profile_cb:
+            self.profile_cb(f"GL scatter upload: {(time.perf_counter()-t1)*1000:.1f} ms")
 
 
 # ---------------------- Options Dialog ----------------------
@@ -479,11 +771,7 @@ class OptionsDialog(QtWidgets.QDialog):
 
         btnBox = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         btnBox.accepted.connect(self.accept); btnBox.rejected.connect(self.reject)
-
-        self.reloadBtn = QtWidgets.QPushButton("Reload Point Cloud")
-        self.reloadBtn.clicked.connect(self.reloadRequested.emit)
-
-        lay = QtWidgets.QVBoxLayout(self); lay.addLayout(form); lay.addWidget(btnBox); lay.addWidget(self.reloadBtn)
+        lay = QtWidgets.QVBoxLayout(self); lay.addLayout(form); lay.addWidget(btnBox)
 
     def values(self):
         return dict(
@@ -510,11 +798,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.df_gps: Optional[pd.DataFrame] = None
         self.scans = None
         self._lidar_times: Optional[np.ndarray] = None
+        self._scan_file_indices: Optional[np.ndarray] = None
         self.extrinsics = None
         self.interps = None
         self.resampled = None
         self.polyline_full = None
         self.origin_shift = np.zeros(3, dtype=np.float64)
+        
+        # profiling toggle
+        self._prof_enabled = False  # set False to silence profiling prints
+        self._t0_main = 0.0
 
         # BEV state
         self.cov_cols = COV_COLS_DEFAULT
@@ -522,6 +815,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.point_size = 6.0
         self.norm_mode = "per"
         self._bev_stride = 1
+        self.selected_cov_idx = 0
+        self._ci_all_full: Optional[List[np.ndarray]] = None
+        self._bev_t_full: Optional[np.ndarray] = None
 
         # Controls state
         self.offset_min_ms = -1000.0
@@ -544,6 +840,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.index_interval = 1
 
         self._build_ui()
+
+    def _pstart(self):
+        if self._prof_enabled:
+            self._t0_main = time.perf_counter()
+
+    def _plog(self, msg: str):
+        if self._prof_enabled:
+            dt = (time.perf_counter() - self._t0_main) * 1000.0
+            print(f"[prof] {dt:8.1f} ms | {msg}")
 
     # ---- UI ----
     def _build_ui(self):
@@ -600,6 +905,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # connections for key-based updates
         self.pcView.indexChanged.connect(self._on_index_step)
         self.pcView.offsetChangedMs.connect(self._on_offset_step_ms)
+        # wire profiling callback
+        self.pcView.profile_cb = self._plog
         self.centerStack.addWidget(self.pcView)
 
         # Right panel: thumbnails + controls (vertical, single column)
@@ -620,6 +927,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Controls group
         ctrlGroup = QtWidgets.QGroupBox("Controls")
         form = QtWidgets.QFormLayout(ctrlGroup)
+
+        # Metric selection (sync with thumbnails/main BEV)
+        self.metricCombo = QtWidgets.QComboBox()
+        self.metricCombo.setEnabled(False)
+        self.metricCombo.currentIndexChanged.connect(self._on_metric_changed)
+        form.addRow("Metric", self.metricCombo)
 
         # Time offset: slider + spin + stride input
         self.offsetSlider = QtWidgets.QSlider(Qt.Horizontal)
@@ -728,6 +1041,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 background-color: #1f2023;
                 color: #e6e6e6;
                 border: 1px solid #3b3f45;
+            }
+            QComboBox {
+                color: #000000; /* 글자색 검정 */
+                background-color: #e6e6e6;
+                border: 1px solid #3b3f45;
+                padding: 2px 6px;
+            }
+            QComboBox QAbstractItemView {
+                color: #000000;
+                background-color: #e6e6e6;
+                selection-background-color: #cfcfcf;
+                selection-color: #000000;
             }
 
             /* Sliders */
@@ -882,12 +1207,11 @@ class MainWindow(QtWidgets.QMainWindow):
             max_frames=self.max_frames,
             index_interval=self.index_interval,
         )
-        # Reload 버튼 동작: 현재 다이얼로그 값 적용 후 즉시 리로드 (다이얼로그는 유지)
-        dlg.reloadRequested.connect(lambda: self._apply_options_and_reload(dlg))
-
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             v = dlg.values()
             self._apply_options_from_values(v)
+            # OK 누르면 즉시 포인트클라우드 리로드
+            self._update_pointcloud(force=True)
 
     def _apply_options_from_values(self, v: dict) -> None:
         self.offset_min_ms = float(v["offset_min_ms"]); self.offset_max_ms = float(v["offset_max_ms"])
@@ -923,6 +1247,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pcView.activateWindow()   # <- 추가
             self.pcView.raise_()           # <- 추가
             self.pcView.set_strides(self.index_stride, int(self.offset_stride_ms))
+            # Ensure index slider/spin reflect actual scan range
+            self._refresh_index_bounds()
             # 초기 뷰셋업
             self._update_pointcloud(force=True)
 
@@ -952,9 +1278,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pcView.set_strides(self.index_stride, int(self.offset_stride_ms))
 
     def _on_index_slider(self, val: int):
-        self.current_index = int(val)
+        if self.scans is None:
+            return
+        if self._scan_file_indices is None or self._scan_file_indices.size == 0:
+            self.current_index = int(np.clip(val, 0, len(self.scans) - 1))
+            self.indexSpin.blockSignals(True)
+            self.indexSpin.setValue(int(val))
+            self.indexSpin.blockSignals(False)
+            self._update_pointcloud()
+            return
+        arr = self._scan_file_indices
+        i = int(np.argmin(np.abs(arr - int(val))))
+        self.current_index = i
+        snapped = int(arr[i])
         self.indexSpin.blockSignals(True)
-        self.indexSpin.setValue(int(val))
+        self.indexSpin.setValue(snapped)
         self.indexSpin.blockSignals(False)
         self._update_pointcloud()
 
@@ -963,16 +1301,30 @@ class MainWindow(QtWidgets.QMainWindow):
         pass
 
     def _on_index_spin_commit(self):
-        val = int(self.indexSpin.value())
         if self.scans is None:
             return
-        val = int(np.clip(val, 0, len(self.scans) - 1))
-        if val != self.current_index:
-            self.current_index = val
+        val = int(self.indexSpin.value())
+        if self._scan_file_indices is None or self._scan_file_indices.size == 0:
+            v = int(np.clip(val, 0, len(self.scans) - 1))
+            if v != self.current_index:
+                self.current_index = v
+                self.indexSlider.blockSignals(True)
+                self.indexSpin.blockSignals(True)
+                self.indexSlider.setValue(v)
+                self.indexSpin.setValue(v)
+                self.indexSlider.blockSignals(False)
+                self.indexSpin.blockSignals(False)
+                self._update_pointcloud()
+            return
+        arr = self._scan_file_indices
+        i = int(np.argmin(np.abs(arr - val)))
+        if i != self.current_index:
+            self.current_index = i
+            snapped = int(arr[i])
             self.indexSlider.blockSignals(True)
             self.indexSpin.blockSignals(True)
-            self.indexSlider.setValue(val)
-            self.indexSpin.setValue(val)
+            self.indexSlider.setValue(snapped)
+            self.indexSpin.setValue(snapped)
             self.indexSlider.blockSignals(False)
             self.indexSpin.blockSignals(False)
             self._update_pointcloud()
@@ -987,10 +1339,11 @@ class MainWindow(QtWidgets.QMainWindow):
         new_idx = int(np.clip(self.current_index + delta, 0, len(self.scans) - 1))
         if new_idx != self.current_index:
             self.current_index = new_idx
+            snapped = int(self._scan_file_indices[new_idx]) if (self._scan_file_indices is not None and self._scan_file_indices.size > 0) else new_idx
             self.indexSlider.blockSignals(True)
             self.indexSpin.blockSignals(True)
-            self.indexSlider.setValue(new_idx)
-            self.indexSpin.setValue(new_idx)
+            self.indexSlider.setValue(snapped)
+            self.indexSpin.setValue(snapped)
             self.indexSlider.blockSignals(False)
             self.indexSpin.blockSignals(False)
             self._update_pointcloud()
@@ -1021,6 +1374,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bev_ci_vals = [select_stride(r.ci_values, r.ci_values, self._bev_stride)[0] for r in ci_all]
         self._bev_units = [r.unit for r in ci_all]
         self._bev_norms = build_norms(ci_all, mode=self.norm_mode)
+        # Store full CI arrays and times for 3D color mapping
+        self._ci_all_full = [np.asarray(r.ci_values, dtype=np.float64) for r in ci_all]
+        self._bev_t_full = self._bev_df["t"].to_numpy(dtype=np.float64) if "t" in self._bev_df.columns else None
+
+        # Populate metric combo
+        self.metricCombo.blockSignals(True)
+        self.metricCombo.clear()
+        self.metricCombo.addItems(self.cov_cols)
+        self.metricCombo.setEnabled(True)
+        self.metricCombo.setCurrentIndex(int(self.selected_cov_idx))
+        self.metricCombo.blockSignals(False)
 
         # thumbnails
         self._build_thumbnails()
@@ -1061,6 +1425,12 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         # 이전 hover 주석 초기화
         self.main_canvas.reset_hover()  # <- 추가
+        # sync selected metric
+        self.selected_cov_idx = int(idx)
+        if hasattr(self, 'metricCombo'):
+            self.metricCombo.blockSignals(True)
+            self.metricCombo.setCurrentIndex(int(idx))
+            self.metricCombo.blockSignals(False)
 
         start_xy = (self._bev_x[0], self._bev_y[0]) if self._bev_x.size > 0 else None
         self.main_canvas.draw_scatter(
@@ -1075,6 +1445,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self._bev_x, self._bev_y, t_vals, self._bev_ci_vals[idx], self._bev_units[idx], self.cov_cols[idx],
             lidar_index_resolver=self._lidar_index_for_gps_time
         )
+        # recolor 3D if visible
+        if self.centerStack.currentIndex() == 1:
+            self._update_pointcloud(force=True)
+
+    def _on_metric_changed(self, idx: int):
+        if idx < 0 or idx >= len(self.cov_cols):
+            return
+        # forward to BEV show and trigger color sync
+        self._show_bev_idx(int(idx))
 
     def _lidar_index_for_gps_time(self, t_gps: float) -> Optional[int]:
         if self._lidar_times is None or self._lidar_times.size == 0:
@@ -1090,16 +1469,24 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_index_bounds(self):
         if self.scans is None:
             return
+        # build actual LiDAR file indices array
+        self._scan_file_indices = np.array([s.index for s in self.scans], dtype=int)
         total = len(self.scans)
+        max_idx = max(0, total - 1)
+        # clamp current internal array index
+        cur = int(np.clip(self.current_index, 0, max_idx))
+        actual_min = int(np.min(self._scan_file_indices))
+        actual_max = int(np.max(self._scan_file_indices))
         self.indexSlider.blockSignals(True)
         self.indexSpin.blockSignals(True)
-        self.indexSlider.setRange(0, max(0, total - 1))
-        self.indexSpin.setRange(0, max(0, total - 1))
-        self.indexSlider.setValue(0)
-        self.indexSpin.setValue(0)
+        self.indexSlider.setRange(actual_min, actual_max)
+        self.indexSpin.setRange(actual_min, actual_max)
+        cur_actual = int(self._scan_file_indices[cur])
+        self.indexSlider.setValue(cur_actual)
+        self.indexSpin.setValue(cur_actual)
         self.indexSlider.blockSignals(False)
         self.indexSpin.blockSignals(False)
-        self.current_index = 0
+        self.current_index = cur
 
     def _prepare_pointcloud_support(self):
         # Extrinsics
@@ -1135,12 +1522,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if gl is None:
             return
 
+        self._pstart()
+        self._plog("start _update_pointcloud")
+
         # Build chunk scans
+        t_sel0 = time.perf_counter()
         start_idx = int(np.clip(self.current_index, 0, len(self.scans) - 1))
         k = max(1, int(self.index_interval))
         max_frames = max(1, int(self.max_frames))
         sel = list(range(start_idx, min(len(self.scans), start_idx + max_frames * k), k))
         chunk_scans = [self.scans[i] for i in sel]
+        self._plog(f"select scans: {(time.perf_counter()-t_sel0)*1000:.1f} ms | {len(chunk_scans)} scans")
 
         # time bounds
         t_min = float(self.df_gps["t"].iloc[0])
@@ -1150,40 +1542,38 @@ class MainWindow(QtWidgets.QMainWindow):
         gps_offset_s = float(self.offset_ms) * 1e-3
         lidar_time_offset_s = -gps_offset_s
 
-        # 대표 시간(t_choice) 및 현재 중심(center_world, origin_shift 적용 좌표계)
+        # representative time & center
+        t_hi0 = time.perf_counter()
         t_choice = None
         for sc in chunk_scans:
             t_adj = float(sc.t) + lidar_time_offset_s
             if t_min <= t_adj <= t_max:
                 t_choice = t_adj
                 break
-
-        # resampled/markers 준비
         stride = max(1, int(self.marker_stride))
         times_sub = self.resampled.times[::stride]
         positions_sub = (self.resampled.positions + self.origin_shift[None, :])[::stride]
-
         center_world = np.zeros(3, dtype=np.float64)
         hi = None
         if t_choice is not None and times_sub.size > 0:
             hi = int(np.argmin(np.abs(times_sub - t_choice)))
             center_world = positions_sub[hi].copy()
+        self._plog(f"compute highlight/center: {(time.perf_counter()-t_hi0)*1000:.1f} ms")
 
-        # 범위 중심을 현재 시점으로 이동: T_world_adjust_dyn = origin_shift - center_world
+        # dynamic adjust and filters
         T_world_adjust_dyn = np.array([
             [1, 0, 0, float(self.origin_shift[0] - center_world[0])],
             [0, 1, 0, float(self.origin_shift[1] - center_world[1])],
             [0, 0, 1, float(self.origin_shift[2] - center_world[2])],
             [0, 0, 0, 1],
         ], dtype=np.float64)
-
-        # Filters (range_enabled일 때만 활성)
         xR = float(self.x_range) if self.range_enabled else np.inf
         yR = float(self.y_range) if self.range_enabled else np.inf
         zR = float(self.z_range) if self.range_enabled else np.inf
         max_pts = None if int(self.max_points) <= 0 else int(self.max_points)
 
-        # Accumulate (현재 중심 기준 필터)
+        # Accumulate
+        t_acc0 = time.perf_counter()
         acc = accumulate_lidar_points(
             scans=chunk_scans,
             t_min=t_min, t_max=t_max,
@@ -1195,19 +1585,64 @@ class MainWindow(QtWidgets.QMainWindow):
             x_range=xR, y_range=yR, z_range=zR,
             verbose=False,
         )
+        self._plog(
+            f"accumulate: {(time.perf_counter()-t_acc0)*1000:.1f} ms | pts={acc.points_xyz.shape[0]} scans_used={acc.num_scans_used}"
+        )
 
-        # 시각화 좌표: polyline/markers도 동일하게 중심 이동(-center_world)
+        # GL updates
+        t_gl0 = time.perf_counter()
         self.pcView.clear_items()
         if acc.points_xyz is None or acc.points_xyz.size == 0:
+            self._plog("no points to render")
             return
         self.pcView.set_pointcloud(acc.points_xyz)
+        self._plog(f"set_pointcloud total: {(time.perf_counter()-t_gl0)*1000:.1f} ms")
 
+        t_mk0 = time.perf_counter()
         poly_shifted = self.polyline_full - center_world[None, :]
         start_shifted = poly_shifted[0] if poly_shifted.shape[0] > 0 else None
         marker_points = positions_sub - center_world[None, :]
         from scipy.spatial.transform import Rotation
         dirs = Rotation.from_quat(self.resampled.quaternions[::stride]).apply(np.array([1.0, 0.0, 0.0]))
-        self.pcView.set_polyline_and_markers(poly_shifted, start_shifted, marker_points, dirs, hi)
+        # Compute BEV-matched colors for markers using selected metric
+        marker_colors = None
+        marker_ci_vals = None
+        try:
+            if self._ci_all_full is not None and self._bev_t_full is not None:
+                mi = int(self.selected_cov_idx)
+                ci_full = np.asarray(self._ci_all_full[mi], dtype=np.float64)
+                t_full = np.asarray(self._bev_t_full, dtype=np.float64)
+                if t_full.size == ci_full.size and t_full.size > 1:
+                    ci_interp = np.interp(times_sub, t_full, ci_full, left=ci_full[0], right=ci_full[-1])
+                    marker_ci_vals = ci_interp.astype(np.float64)
+                    ci_interp = np.clip(ci_interp, 1e-12, None)
+                    norm = self._bev_norms[mi]
+                    vals01 = norm(ci_interp)
+                    cmap = plt.get_cmap(self.cmap)
+                    rgba = cmap(vals01)
+                    marker_colors = rgba.astype(np.float32)
+        except Exception as e:
+            self._plog(f"marker color map failed: {e}")
+
+        # Compute LiDAR indices for each marker time (GPS-based offset)
+        marker_lidar_idx = None
+        try:
+            if self._lidar_times is not None and self._lidar_times.size > 0 and times_sub.size > 0:
+                adjusted = self._lidar_times + lidar_time_offset_s
+                # nearest index via searchsorted
+                j = np.searchsorted(adjusted, times_sub)
+                j = np.clip(j, 1, adjusted.size - 1)
+                prev = j - 1
+                next_ = j
+                choose_next = np.abs(adjusted[next_] - times_sub) < np.abs(adjusted[prev] - times_sub)
+                marker_lidar_idx = np.where(choose_next, next_, prev).astype(int)
+        except Exception as e:
+            self._plog(f"lidar index map failed: {e}")
+        self.pcView.set_polyline_and_markers(
+            poly_shifted, start_shifted, marker_points, dirs, hi,
+            marker_colors, marker_ci_vals, times_sub, marker_lidar_idx
+        )
+        self._plog(f"markers/polyline: {(time.perf_counter()-t_mk0)*1000:.1f} ms")
 
 # ---- App entry ----
 
