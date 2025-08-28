@@ -565,7 +565,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.offsetSpin.blockSignals(False)
         self._update_pointcloud()
         self._update_images()
-        self._refresh_bev_markers()
+        self._update_bev_markers_fast()
 
     def _on_offset_spin(self, val: int):
         pass
@@ -579,7 +579,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.offsetSlider.blockSignals(False)
             self._update_pointcloud()
             self._update_images()
-            self._refresh_bev_markers()
+            self._update_bev_markers_fast()
 
     def _on_offset_stride_changed(self, val: int):
         self.offset_stride_ms = int(val)
@@ -595,7 +595,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.indexSpin.blockSignals(False)
             self._update_pointcloud()
             self._update_images()
-            self._refresh_bev_markers()
+            self._update_bev_markers_fast()
             return
         arr = self._scan_file_indices
         i = int(np.argmin(np.abs(arr - int(val))))
@@ -606,7 +606,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.indexSpin.blockSignals(False)
         self._update_pointcloud()
         self._update_images()
-        self._refresh_bev_markers()
+        self._update_bev_markers_fast()
 
     def _on_index_spin(self, val: int):
         pass
@@ -627,7 +627,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.indexSpin.blockSignals(False)
                 self._update_pointcloud()
                 self._update_images()
-                self._refresh_bev_markers()
+                self._update_bev_markers_fast()
             return
         arr = self._scan_file_indices
         i = int(np.argmin(np.abs(arr - val)))
@@ -642,7 +642,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.indexSpin.blockSignals(False)
             self._update_pointcloud()
             self._update_images()
-            self._refresh_bev_markers()
+            self._update_bev_markers_fast()
 
     def _on_index_step(self, delta: int):
         if self.scans is None:
@@ -659,7 +659,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.indexSpin.blockSignals(False)
             self._update_pointcloud()
             self._update_images()
-            self._refresh_bev_markers()
+            self._update_bev_markers_fast()
             
     def _on_offset_step_ms(self, delta_ms: int):
         new_val = int(np.clip(self.offset_ms + delta_ms, self.offset_min_ms, self.offset_max_ms))
@@ -671,7 +671,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.offsetSpin.setValue(int(new_val))
             self.offsetSlider.blockSignals(False)
             self.offsetSpin.blockSignals(False)
-            self._update_pointcloud()
+            self._update_pointcloud(force=True)
+            self._update_images()
+            self._update_bev_markers_fast()
 
     # ---- Data prep ----
     def _prepare_gps_dependent(self):
@@ -856,8 +858,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_images()
         
     def _update_pointcloud(self, force: bool = False):
-        if self.centerStack.currentIndex() != 1 and not force:
-            return
+        # if self.centerStack.currentIndex() != 1 and not force:
+        #     return
         if self.df_gps is None or self.scans is None or self.interps is None:
             return
         try:
@@ -988,6 +990,22 @@ class MainWindow(QtWidgets.QMainWindow):
             marker_colors, marker_ci_vals, times_sub, marker_lidar_idx
         )
         self._plog(f"markers/polyline: {(time.perf_counter()-t_mk0)*1000:.1f} ms")
+
+    def _update_bev_markers_fast(self):
+        t0 = time.perf_counter()
+        cur_xy = self._current_bev_dot_xy()
+        try:
+            self.main_canvas.update_current_marker(cur_xy)
+        except Exception:
+            pass
+        if hasattr(self, "thumb_canvases"):
+            for canvas in self.thumb_canvases:
+                try:
+                    canvas.update_current_marker(cur_xy)
+                except Exception:
+                    pass
+        if self._prof_enabled:
+            print(f"[timing] _update_bev_markers_fast: {(time.perf_counter()-t0)*1000:.1f} ms")
 
     def _on_thumb_clicked(self, cam_1based: int):
         # update selected camera and refresh images (no hover reaction)
