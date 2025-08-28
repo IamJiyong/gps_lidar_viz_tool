@@ -171,6 +171,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.main_toolbar = NavToolbar(self.main_canvas, bevTop)
         bevTopV.addWidget(self.main_toolbar)
         bevTopV.addWidget(self.main_canvas, 1)
+        self.main_canvas.lidarIndexClicked.connect(self._on_bev_lidar_clicked)
 
         # Bottom: thumbnails + controls
         rightBottom = QtWidgets.QWidget()
@@ -661,6 +662,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_images()
             self._update_bev_markers_fast()
             
+    def _on_bev_lidar_clicked(self, li: int):
+        if self.scans is None:
+            return
+        i = int(np.clip(int(li), 0, len(self.scans) - 1))
+        if i == self.current_index:
+            return
+        self.current_index = i
+        snapped = int(self._scan_file_indices[i]) if (self._scan_file_indices is not None and self._scan_file_indices.size > 0) else i
+        self.indexSlider.blockSignals(True)
+        self.indexSpin.blockSignals(True)
+        self.indexSlider.setValue(snapped)
+        self.indexSpin.setValue(snapped)
+        self.indexSlider.blockSignals(False)
+        self.indexSpin.blockSignals(False)
+        self._update_pointcloud()
+        self._update_images()
+        self._update_bev_markers_fast()
+
     def _on_offset_step_ms(self, delta_ms: int):
         new_val = int(np.clip(self.offset_ms + delta_ms, self.offset_min_ms, self.offset_max_ms))
         if new_val != int(self.offset_ms):
@@ -776,6 +795,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._redraw_thumbnails_with_markers()
         except Exception:
             pass
+
     @QtCore.pyqtSlot(int)
     def _show_bev_idx(self, idx: int):
         if idx < 0 or idx >= len(self.cov_cols):

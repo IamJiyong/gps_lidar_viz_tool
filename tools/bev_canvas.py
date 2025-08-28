@@ -32,6 +32,8 @@ class BEVClickableCanvas(FigureCanvas):
 
         # Colorbar handle to prevent accumulation
         self._cbar = None
+        # Current marker handle for fast updates
+        self._cur_marker = None
 
     def mousePressEvent(self, event):
         self.clicked.emit(self._idx)
@@ -77,10 +79,11 @@ class BEVClickableCanvas(FigureCanvas):
                             s=120, facecolors="none", edgecolors="r", linewidths=2.0, zorder=5)
 
         # current index marker (filled red dot with white edge)
+        self._cur_marker = None
         if current_xy is not None:
-            self.ax.scatter([current_xy[0]], [current_xy[1]],
-                            s=60, facecolors="#ff3030", edgecolors="#ffffff",
-                            linewidths=1.2, zorder=6)
+            self._cur_marker = self.ax.scatter([current_xy[0]], [current_xy[1]],
+                                               s=60, facecolors="#ff3030", edgecolors="#ffffff",
+                                               linewidths=1.2, zorder=6)
 
         self.ax.set_title(title, fontsize=9, color="w")
         self.ax.set_aspect("equal", adjustable="box")
@@ -106,6 +109,37 @@ class BEVClickableCanvas(FigureCanvas):
 
         self.fig.tight_layout(pad=0.5)
         self.draw()
+
+    def update_current_marker(self, current_xy: Optional[Tuple[float, float]]):
+        try:
+            if current_xy is None:
+                if self._cur_marker is not None:
+                    try:
+                        self._cur_marker.remove()
+                    except Exception:
+                        pass
+                    self._cur_marker = None
+                self.fig.canvas.draw_idle()
+                return
+            x, y = float(current_xy[0]), float(current_xy[1])
+            if self._cur_marker is None:
+                self._cur_marker = self.ax.scatter([x], [y],
+                                                   s=60, facecolors="#ff3030", edgecolors="#ffffff",
+                                                   linewidths=1.2, zorder=6)
+            else:
+                try:
+                    self._cur_marker.set_offsets(np.array([[x, y]], dtype=float))
+                except Exception:
+                    try:
+                        self._cur_marker.remove()
+                    except Exception:
+                        pass
+                    self._cur_marker = self.ax.scatter([x], [y],
+                                                       s=60, facecolors="#ff3030", edgecolors="#ffffff",
+                                                       linewidths=1.2, zorder=6)
+            self.fig.canvas.draw_idle()
+        except Exception:
+            pass
 
 
 class BEVMainCanvas(BEVClickableCanvas):
