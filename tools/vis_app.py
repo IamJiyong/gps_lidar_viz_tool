@@ -367,14 +367,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.shortQ.activated.connect(lambda: self._on_offset_step_ms(-self.offset_stride_ms))
         self.shortE.activated.connect(lambda: self._on_offset_step_ms(+self.offset_stride_ms))
 
-        # Optional: print where focus sits when UI shows (helps detect if a QLineEdit is eating keys)
-        QtCore.QTimer.singleShot(500, lambda: print(f"[focus] initial focus={QtWidgets.QApplication.focusWidget().metaObject().className() if QtWidgets.QApplication.focusWidget() else 'None'}"))
-
-        # Also add explicit prints on shortcut activation to confirm signal paths:
-        self.shortA.activated.connect(lambda: print("[shortcut] A activated"))
-        self.shortD.activated.connect(lambda: print("[shortcut] D activated"))
-        self.shortQ.activated.connect(lambda: print("[shortcut] Q activated"))
-        self.shortE.activated.connect(lambda: print("[shortcut] E activated"))
 
     # ---- Toolbar actions ----
     def _on_open_gps(self):
