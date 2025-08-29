@@ -30,6 +30,9 @@ from bev_canvas import BEVClickableCanvas, BEVMainCanvas
 from pointcloud_view import PointCloudView
 from options_dialog import OptionsDialog
 from image_panel import ImagePanel
+from marks_manager import MarksManager, Interval
+from timeline_bar import TimelineBar, Band
+from export_utils import export_synced_gps
 
 
 EXTRINSICS_FIXED_PATH = "extrinsics.yaml"
@@ -94,6 +97,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.max_frames = 10
         self.index_interval = 1
 
+        # Marks/worker/save-root
+        self.worker_name: str = ""
+        self.save_root_dir: Optional[str] = None
+        self.marks = MarksManager()
+        self.timeline: Optional[TimelineBar] = None
+        self.color_mode: str = "default"
+
         self._build_ui()
 
     def _pstart(self):
@@ -113,6 +123,7 @@ class MainWindow(QtWidgets.QMainWindow):
         actOpenLidar = QtWidgets.QAction("Open LiDAR Dir", self)
         actOpenFolder = QtWidgets.QAction("Open Folder", self)
         actOpenImages = QtWidgets.QAction("Open Images Folder", self)
+        self.actOpenMarks = QtWidgets.QAction("Open Marks JSON…", self)
 
         actOptions = QtWidgets.QAction("Options", self)
         actViewCloud = QtWidgets.QAction("View Point Cloud", self)
@@ -127,17 +138,28 @@ class MainWindow(QtWidgets.QMainWindow):
         openMenu.addAction(actOpenGps)
         openMenu.addAction(actOpenLidar)
         openMenu.addAction(actOpenImages)
+        openMenu.addAction(self.actOpenMarks)
         openBtn.setMenu(openMenu)
 
         toolbar.addWidget(openBtn)
         toolbar.addSeparator()
         toolbar.addAction(actOptions)
 
+        # Marks/actions (toolbar minimal)
+        self.actAddRange = QtWidgets.QAction("Add", self)
+        self.actRemoveRange = QtWidgets.QAction("Remove", self)
+        self.actExport = QtWidgets.QAction("Export synced GPS", self)
+        # Keep toolbar clean per request: do not add these actions to toolbar
+
         actOpenGps.triggered.connect(self._on_open_gps)
         actOpenLidar.triggered.connect(self._on_open_lidar)
         actOpenFolder.triggered.connect(self._on_open_folder)
         actOpenImages.triggered.connect(self._on_open_images_folder)
         actOptions.triggered.connect(self._on_options)
+        self.actOpenMarks.triggered.connect(self._on_open_marks_json)
+        self.actExport.triggered.connect(self._on_export_synced)
+        self.actAddRange.triggered.connect(self._on_add_range)
+        self.actRemoveRange.triggered.connect(self._on_remove_selected_ranges)
 
         splitter = QtWidgets.QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(10)
@@ -225,37 +247,24 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("Time offset (ms)", offRow)
         form.addRow("Offset stride", self.offsetStrideSpin)
 
-        # LiDAR index
-        self.indexSlider = QtWidgets.QSlider(Qt.Horizontal)
-        self.indexSlider.setRange(0, 0)
-        self.indexSlider.setValue(0)
-        self.indexSpin = QtWidgets.QSpinBox()
-        self.indexSpin.setRange(0, 0)
-        self.indexSpin.setValue(0)
-        self.indexSpin.setKeyboardTracking(False)
-        self.indexSpin.lineEdit().returnPressed.connect(self._on_index_spin_commit)
+        # Interval controls (Add/Remove/Export)
+        btnRow = QtWidgets.QHBoxLayout()
+        self.btnAdd = QtWidgets.QPushButton("Add")
+        self.btnRemove = QtWidgets.QPushButton("Remove")
+        self.btnExport = QtWidgets.QPushButton("Export")
+        self.btnAdd.clicked.connect(self._on_add_range)
+        self.btnRemove.clicked.connect(self._on_remove_selected_ranges)
+        self.btnExport.clicked.connect(self._on_export_synced)
+        btnRow.addWidget(self.btnAdd)
+        btnRow.addWidget(self.btnRemove)
+        btnRow.addStretch(1)
+        btnRow.addWidget(self.btnExport)
+        form.addRow("Intervals", btnRow)
 
-        self.indexStrideSpin = QtWidgets.QSpinBox()
-        self.indexStrideSpin.setRange(1, 10000)
-        self.indexStrideSpin.setValue(self.index_stride)
-        self.indexStrideSpin.setSuffix(" (a/d)")
-
-        self.indexSlider.valueChanged.connect(self._on_index_slider)
-        self.indexSpin.valueChanged.connect(self._on_index_spin)
+        # Re-add LiDAR index stride control
+        self.indexStrideSpin = QtWidgets.QSpinBox(); self.indexStrideSpin.setRange(1, 10000); self.indexStrideSpin.setValue(self.index_stride); self.indexStrideSpin.setSuffix(" (a/d)")
         self.indexStrideSpin.valueChanged.connect(self._on_index_stride_changed)
-
-        idxRow = QtWidgets.QHBoxLayout()
-        idxRow.addWidget(self.indexSlider, 1)
-        idxRow.addWidget(self.indexSpin, 0)
-        form.addRow("LiDAR index", idxRow)
         form.addRow("Index stride", self.indexStrideSpin)
-
-        # View Point Cloud toggle button (kept; focuses the pc view)
-        self.viewCloudToggle = QtWidgets.QPushButton("View Point Cloud")
-        self.viewCloudToggle.setCheckable(True)
-        self.viewCloudToggle.setChecked(False)
-        self.viewCloudToggle.toggled.connect(self._on_toggle_cloud)
-        rbV.addWidget(self.viewCloudToggle, 0)
 
         rbV.addWidget(ctrlGroup, 0)
 
@@ -270,6 +279,25 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         splitter.setSizes([420, 900, 480])
+
+        # Bottom global timeline dock
+        self.timelineDock = QtWidgets.QDockWidget("Timeline", self)
+        self.timelineDock.setFeatures(QtWidgets.QDockWidget.NoDockWidgetFeatures)
+        dockWidget = QtWidgets.QWidget()
+        dockLayout = QtWidgets.QHBoxLayout(dockWidget); dockLayout.setContentsMargins(6,4,6,4); dockLayout.setSpacing(8)
+        self.timeline = TimelineBar()
+        self.lblCurTotal = QtWidgets.QLabel("0/0")
+        self.lblCurTotal.setMinimumWidth(90)
+        dockLayout.addWidget(self.timeline, 1)
+        dockLayout.addWidget(self.lblCurTotal, 0)
+        self.timelineDock.setWidget(dockWidget)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.timelineDock)
+
+        # Connect timeline signals
+        self.timeline.currentIndexChanged.connect(self._on_timeline_index_changed)
+        self.timeline.bandsEdited.connect(self._on_timeline_bands_edited)
+        self.timeline.selectionChanged.connect(self._on_timeline_selection_changed)
+        self.timeline.removeRequested.connect(self._on_timeline_remove)
 
         # stylesheet
         self.setStyleSheet("""
@@ -363,11 +391,91 @@ class MainWindow(QtWidgets.QMainWindow):
         self.shortD = QtWidgets.QShortcut(QtGui.QKeySequence("D"), self); self.shortD.setContext(Qt.ApplicationShortcut)
         self.shortQ = QtWidgets.QShortcut(QtGui.QKeySequence("Q"), self); self.shortQ.setContext(Qt.ApplicationShortcut)
         self.shortE = QtWidgets.QShortcut(QtGui.QKeySequence("E"), self); self.shortE.setContext(Qt.ApplicationShortcut)
+        self.shortSpace = QtWidgets.QShortcut(QtGui.QKeySequence("Space"), self); self.shortSpace.setContext(Qt.ApplicationShortcut)
+        self.shortUndo = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self); self.shortUndo.setContext(Qt.ApplicationShortcut)
+        self.shortRedo = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Y"), self); self.shortRedo.setContext(Qt.ApplicationShortcut)
         self.shortA.activated.connect(lambda: self._on_index_step(-self.index_stride))
         self.shortD.activated.connect(lambda: self._on_index_step(+self.index_stride))
         self.shortQ.activated.connect(lambda: self._on_offset_step_ms(-self.offset_stride_ms))
         self.shortE.activated.connect(lambda: self._on_offset_step_ms(+self.offset_stride_ms))
+        self.shortSpace.activated.connect(self._on_space_toggle_range)
+        self.shortUndo.activated.connect(self._on_undo)
+        self.shortRedo.activated.connect(self._on_redo)
 
+        # prompt worker after window shows
+        QtCore.QTimer.singleShot(0, self._ensure_worker_name)
+
+    # Dark themed message boxes & inputs (declared early for first use)
+    def _warn(self, title: str, text: str):
+        m = QtWidgets.QMessageBox(self)
+        m.setWindowTitle(title)
+        m.setText(text)
+        m.setIcon(QtWidgets.QMessageBox.Warning)
+        m.setStyleSheet("QMessageBox{background-color:#000; color:#fff;} QLabel{color:#fff;} QPushButton{background-color:#2b2d31; color:#e6e6e6;}")
+        m.exec_()
+
+    def _warn_yes_no(self, title: str, text: str) -> bool:
+        m = QtWidgets.QMessageBox(self)
+        m.setWindowTitle(title)
+        m.setText(text)
+        m.setIcon(QtWidgets.QMessageBox.Warning)
+        m.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        m.setDefaultButton(QtWidgets.QMessageBox.No)
+        m.setStyleSheet("QMessageBox{background-color:#000; color:#fff;} QLabel{color:#fff;} QPushButton{background-color:#2b2d31; color:#e6e6e6;}")
+        return m.exec_() == QtWidgets.QMessageBox.Yes
+
+    def _info(self, title: str, text: str):
+        m = QtWidgets.QMessageBox(self)
+        m.setWindowTitle(title)
+        m.setText(text)
+        m.setIcon(QtWidgets.QMessageBox.Information)
+        m.setStyleSheet("QMessageBox{background-color:#000; color:#fff;} QLabel{color:#fff;} QPushButton{background-color:#2b2d31; color:#e6e6e6;}")
+        m.exec_()
+
+    def _dark_text_input(self, title: str, label: str, default: str) -> Optional[str]:
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setStyleSheet("QDialog{background:#000; color:#fff;} QLabel{color:#fff;} QLineEdit{background:#1f2023; color:#e6e6e6; border:1px solid #3b3f45;} QPushButton{background:#2b2d31; color:#e6e6e6;}")
+        form = QtWidgets.QFormLayout(dlg)
+        form.addRow(QtWidgets.QLabel(label))
+        edit = QtWidgets.QLineEdit(); edit.setText(default or "")
+        form.addRow(edit)
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        form.addRow(btns)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            return edit.text().strip()
+        return None
+
+    def _dark_combo_select(self, title: str, label: str, items: List[str]) -> Optional[str]:
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setStyleSheet("QDialog{background:#000; color:#fff;} QLabel{color:#fff;} QComboBox{background:#000; color:#e6e6e6; border:1px solid #3b3f45;} QPushButton{background:#2b2d31; color:#e6e6e6;}")
+        form = QtWidgets.QFormLayout(dlg)
+        form.addRow(QtWidgets.QLabel(label))
+        combo = QtWidgets.QComboBox(); combo.addItems(items)
+        form.addRow(combo)
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        form.addRow(btns)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            return combo.currentText()
+        return None
+
+    def _dark_int_input(self, title: str, label: str, value: int, minv: int, maxv: int) -> Optional[int]:
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setStyleSheet("QDialog{background:#000; color:#fff;} QLabel{color:#fff;} QSpinBox{background:#1f2023; color:#e6e6e6; border:1px solid #3b3f45;} QPushButton{background:#2b2d31; color:#e6e6e6;}")
+        form = QtWidgets.QFormLayout(dlg)
+        form.addRow(QtWidgets.QLabel(label))
+        box = QtWidgets.QSpinBox(); box.setRange(minv, maxv); box.setValue(value)
+        form.addRow(box)
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        form.addRow(btns)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            return int(box.value())
+        return None
 
     # ---- Toolbar actions ----
     def _on_open_gps(self):
@@ -394,10 +502,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scans = parse_lidar_directory(d)
         self._lidar_times = np.array([s.t for s in self.scans], dtype=np.float64)
         self._refresh_index_bounds()
+        # set default save root if empty
+        if self.save_root_dir is None:
+            self.save_root_dir = os.path.abspath(os.path.join(d, os.pardir))
+            self.marks.set_save_root(self.save_root_dir)
 
         if self.df_gps is not None:
             self._prepare_pointcloud_support()
         self._update_images()
+        # after LiDAR known, refresh timeline
+        self._refresh_timeline()
 
     def _auto_find_in_folder(self, root_dir: str) -> Tuple[Optional[str], Optional[str]]:
         candidates_csv = [
@@ -455,7 +569,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.df_gps = load_gps_csv(csv_path)
             self._prepare_gps_dependent()
         else:
-            QtWidgets.QMessageBox.warning(self, "Not Found", "Could not find GPS CSV in the selected folder.")
+            self._warn("Not Found", "Could not find GPS CSV in the selected folder.")
 
         # LiDAR
         if lidar_dir:
@@ -464,35 +578,44 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._lidar_times = np.array([s.t for s in self.scans], dtype=np.float64)
                 self._refresh_index_bounds()
             except Exception as e:
-                QtWidgets.QMessageBox.warning(self, "LiDAR Error", str(e))
+                self._warn("LiDAR Error", str(e))
         else:
-            QtWidgets.QMessageBox.warning(self, "Not Found", "Could not find LiDAR directory in the selected folder.")
+            self._warn("Not Found", "Could not find LiDAR directory in the selected folder.")
 
         if self.df_gps is not None:
             self._prepare_pointcloud_support()
 
-        # Cameras
+        # Cameras (restore auto-load)
         cam_root = self._auto_find_cameras(d)
         if cam_root:
             try:
                 self._load_camera_set(cam_root)
             except Exception as e:
-                QtWidgets.QMessageBox.warning(self, "Camera Error", str(e))
+                self._warn("Camera Error", str(e))
         else:
-            QtWidgets.QMessageBox.warning(self, "Not Found", "Could not find camera_1..camera_6 in the selected folder.")
- 
+            self._warn("Not Found", "Could not find camera_1..camera_6 in the selected folder.")
+
+        # set roots
+        self.cam_loaded_root = d
+        self.save_root_dir = d
+        self.marks.set_save_root(d)
+        # load/select/create marks JSON
+        self._handle_marks_on_open_folder(d)
+        # refresh timeline
+        self._refresh_timeline()
+
     def _on_open_images_folder(self):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "Open Images Folder", "")
         if not d:
             return
         cam_root = self._auto_find_cameras(d)
         if not cam_root:
-            QtWidgets.QMessageBox.warning(self, "Not Found", "Could not find camera_1..camera_6 in the selected folder.")
+            self._warn("Not Found", "Could not find camera_1..camera_6 in the selected folder.")
             return
         try:
             self._load_camera_set(cam_root)
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Camera Error", str(e))
+            self._warn("Camera Error", str(e))
 
     def _on_options(self):
         dlg = OptionsDialog(
@@ -509,6 +632,9 @@ class MainWindow(QtWidgets.QMainWindow):
             max_frames=self.max_frames,
             index_interval=self.index_interval,
             cam_offsets_ms=self.cam_offsets_ms.tolist() if isinstance(self.cam_offsets_ms, np.ndarray) else self.cam_offsets_ms,
+            worker_name=self.worker_name,
+            save_root_dir=self.save_root_dir or (self.cam_loaded_root or ""),
+            color_mode=self.color_mode,
         )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             v = dlg.values()
@@ -533,6 +659,15 @@ class MainWindow(QtWidgets.QMainWindow):
             arr = np.array(v["cam_offsets_ms"], dtype=np.float64).reshape(-1)
             if arr.size == 6:
                 self.cam_offsets_ms = arr
+        # worker/save-root
+        if "worker_name" in v:
+            self.worker_name = str(v["worker_name"]).strip()
+            self.marks.set_worker(self.worker_name)
+        if "save_root_dir" in v and v["save_root_dir"]:
+            self.save_root_dir = str(v["save_root_dir"]).strip()
+            self.marks.set_save_root(self.save_root_dir)
+        if "color_mode" in v:
+            self.color_mode = str(v["color_mode"]) or "default"
         self.offsetSlider.blockSignals(True)
         self.offsetSpin.blockSignals(True)
         self.offsetSlider.setRange(int(self.offset_min_ms), int(self.offset_max_ms))
@@ -546,6 +681,180 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_options_from_values(v)
         self._update_pointcloud(force=True)
         self._update_images()
+
+    def _on_filter_toggle(self, on: bool):
+        pal = self.statusBar().palette()
+        c = QtGui.QColor("#8a1f1f") if on else QtGui.QColor("#2b2d31")
+        self.statusBar().setStyleSheet(f"QStatusBar{{background-color:{c.name()}; color:#e6e6e6;}}")
+        self.statusBar().showMessage("Filtering ON" if on else "Filtering OFF", 1500)
+
+    def _on_timeline_index_changed(self, idx: int):
+        if self._scan_file_indices is None or self._scan_file_indices.size == 0:
+            return
+        i = int(np.argmin(np.abs(self._scan_file_indices - int(idx))))
+        self._on_bev_lidar_clicked(int(i))
+
+    def _on_timeline_bands_edited(self, bands):
+        try:
+            intervals = []
+            for b in bands or []:
+                intervals.append(Interval(int(b.start_idx), int(b.end_idx), id=b.id, source="manual"))
+            self.marks.set_manual(intervals)
+            self._save_marks()
+        except Exception:
+            pass
+
+    def _on_timeline_selection_changed(self, ids):
+        # selection is queried directly from timeline when removing
+        pass
+
+    def _on_add_range(self):
+        if self._scan_file_indices is None or self._scan_file_indices.size == 0:
+            return
+        mn = int(np.min(self._scan_file_indices)); mx = int(np.max(self._scan_file_indices))
+        cur = int(self._scan_file_indices[int(np.clip(self.current_index, 0, len(self._scan_file_indices)-1))])
+        # Dark styled dialog: custom
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Add interval")
+        dlg.setStyleSheet("QDialog{background:#000; color:#fff;} QLabel{color:#fff;} QSpinBox{background:#1f2023; color:#e6e6e6; border:1px solid #3b3f45;} QPushButton{background:#2b2d31; color:#e6e6e6;}")
+        form = QtWidgets.QFormLayout(dlg)
+        sBox = QtWidgets.QSpinBox(); sBox.setRange(mn, mx); sBox.setValue(cur)
+        eBox = QtWidgets.QSpinBox(); eBox.setRange(mn, mx); eBox.setValue(cur)
+        form.addRow("Start index", sBox)
+        form.addRow("End index", eBox)
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        form.addWidget(btns)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        s = int(min(sBox.value(), eBox.value())); e = int(max(sBox.value(), eBox.value()))
+        self.marks.add_manual(s, e)
+        self._refresh_timeline(); self._save_marks()
+
+    def _on_remove_selected_ranges(self):
+        if not self.timeline:
+            return
+        ids = list(self.timeline.selected_ids())
+        if not ids:
+            return
+        self.marks.remove_by_ids(ids)
+        self._refresh_timeline(); self._save_marks()
+
+    def _on_timeline_remove(self, idset):
+        try:
+            ids = list(idset) if isinstance(idset, (set, list)) else []
+            if not ids:
+                return
+            self.marks.remove_by_ids(ids)
+            self._refresh_timeline(); self._save_marks()
+        except Exception:
+            pass
+
+    def _save_marks(self):
+        if self.save_root_dir is None and self.cam_loaded_root:
+            self.save_root_dir = self.cam_loaded_root
+        if self.save_root_dir:
+            self.marks.set_save_root(self.save_root_dir)
+        self.marks.save()
+
+    def _on_open_marks_json(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Marks JSON", self.save_root_dir or "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            self.marks.load_from_json(path)
+            # adopt root/worker from file
+            self.worker_name = self.marks.worker
+            self.save_root_dir = self.marks.data_root
+            self._refresh_timeline()
+            self.statusBar().showMessage(f"Loaded marks: {os.path.basename(path)}", 2000)
+        except Exception as e:
+            self._warn("Marks Error", str(e))
+
+    def _refresh_timeline(self):
+        if self.timeline is None:
+            return
+        if self._scan_file_indices is None or self._scan_file_indices.size == 0:
+            self.timeline.set_range(0, 0); self.timeline.set_current(0); self.timeline.set_bands([]); self.lblCurTotal.setText("0/0"); return
+        mn = int(np.min(self._scan_file_indices)); mx = int(np.max(self._scan_file_indices))
+        self.timeline.set_range(mn, mx)
+        cur = int(self._scan_file_indices[int(np.clip(self.current_index, 0, len(self._scan_file_indices)-1))])
+        self.timeline.set_current(cur)
+        self.lblCurTotal.setText(f"{cur}/{mx}")
+        bands = []
+        for iv in self.marks.union():
+            bands.append(Band(iv.id, int(iv.start_idx), int(iv.end_idx)))
+        self.timeline.set_bands(bands)
+
+    def _on_export_synced(self):
+        if self.df_gps is None or self.scans is None:
+            self._warn("Export", "Load GPS and LiDAR first.")
+            return
+        # pre-check: list indices that would be excluded due to out-of-range
+        t_min = float(self.df_gps["t"].iloc[0]); t_max = float(self.df_gps["t"].iloc[-1])
+        dt = -float(self.offset_ms) * 1e-3
+        times = np.array([s.t for s in self.scans], dtype=np.float64) + dt
+        indices = [s.index for s in self.scans]
+        excluded = [int(idx) for idx, t in zip(indices, times) if not (t_min <= t <= t_max)]
+        if excluded:
+            res = self._warn_yes_no("Export Warning", f"{len(excluded)} LiDAR indices are outside GPS range and will be excluded. Continue?")
+            if not res:
+                return
+        out_csv = os.path.join(self.cam_loaded_root or self.save_root_dir or os.getcwd(), "GPS", "odom_data_synced.csv")
+        excluded_after, written = export_synced_gps(self.df_gps, self.scans, self.offset_ms, out_csv)
+        if excluded_after:
+            self.statusBar().showMessage(f"Excluded {len(excluded_after)} indices due to range.", 4000)
+        self._info("Export", f"Exported {written} rows to {out_csv}")
+
+    def _ensure_worker_name(self):
+        if self.worker_name:
+            return
+        name = self._dark_text_input("Worker name", "Enter worker name (required):", "")
+        if name:
+            self.worker_name = name
+            self.marks.set_worker(self.worker_name)
+
+    def _on_space_toggle_range(self):
+        if self._scan_file_indices is None or self._scan_file_indices.size == 0:
+            return
+        cur_idx = int(self._scan_file_indices[int(np.clip(self.current_index, 0, len(self._scan_file_indices)-1))])
+        if getattr(self, "_pending_range_start", None) is None:
+            self._pending_range_start = cur_idx
+            if self.timeline:
+                self.timeline.set_pending_range(cur_idx, cur_idx)
+            # red border on point cloud during pending (apply to frame)
+            try:
+                self.pcView.set_filter_border(True)
+            except Exception:
+                pass
+        else:
+            s = int(min(self._pending_range_start, cur_idx))
+            e = int(max(self._pending_range_start, cur_idx))
+            self._pending_range_start = None
+            if self.timeline:
+                self.timeline.clear_pending_range()
+            self.marks.add_manual(s, e)
+            self._refresh_timeline(); self._save_marks()
+            # clear red border
+            try:
+                self.pcView.set_filter_border(False)
+            except Exception:
+                pass
+
+    def _on_undo(self):
+        if self.marks.undo():
+            self._refresh_timeline(); self._save_marks()
+
+    def _on_redo(self):
+        if self.marks.redo():
+            self._refresh_timeline(); self._save_marks()
+
+    def closeEvent(self, ev: QtGui.QCloseEvent):
+        try:
+            self._save_marks()
+        except Exception:
+            pass
+        super().closeEvent(ev)
 
     def _on_toggle_cloud(self, checked: bool):
         # Center is point cloud view only; just focus when toggled on
@@ -567,6 +876,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_pointcloud()
         self._update_images()
         self._update_bev_markers_fast()
+        self._recompute_auto_marks()
 
     def _on_offset_spin(self, val: int):
         pass
@@ -581,6 +891,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_pointcloud()
             self._update_images()
             self._update_bev_markers_fast()
+            self._recompute_auto_marks()
 
     def _on_offset_stride_changed(self, val: int):
         self.offset_stride_ms = int(val)
@@ -597,6 +908,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_pointcloud()
             self._update_images()
             self._update_bev_markers_fast()
+            self._refresh_timeline()
             return
         arr = self._scan_file_indices
         i = int(np.argmin(np.abs(arr - int(val))))
@@ -608,6 +920,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_pointcloud()
         self._update_images()
         self._update_bev_markers_fast()
+        self._refresh_timeline()
 
     def _on_index_spin(self, val: int):
         pass
@@ -620,30 +933,19 @@ class MainWindow(QtWidgets.QMainWindow):
             v = int(np.clip(val, 0, len(self.scans) - 1))
             if v != self.current_index:
                 self.current_index = v
-                self.indexSlider.blockSignals(True)
-                self.indexSpin.blockSignals(True)
-                self.indexSlider.setValue(v)
-                self.indexSpin.setValue(v)
-                self.indexSlider.blockSignals(False)
-                self.indexSpin.blockSignals(False)
                 self._update_pointcloud()
                 self._update_images()
                 self._update_bev_markers_fast()
+                self._refresh_timeline()
             return
         arr = self._scan_file_indices
         i = int(np.argmin(np.abs(arr - val)))
         if i != self.current_index:
             self.current_index = i
-            snapped = int(arr[i])
-            self.indexSlider.blockSignals(True)
-            self.indexSpin.blockSignals(True)
-            self.indexSlider.setValue(snapped)
-            self.indexSpin.setValue(snapped)
-            self.indexSlider.blockSignals(False)
-            self.indexSpin.blockSignals(False)
             self._update_pointcloud()
             self._update_images()
             self._update_bev_markers_fast()
+            self._refresh_timeline()
 
     def _on_index_step(self, delta: int):
         if self.scans is None:
@@ -651,16 +953,13 @@ class MainWindow(QtWidgets.QMainWindow):
         new_idx = int(np.clip(self.current_index + delta, 0, len(self.scans) - 1))
         if new_idx != self.current_index:
             self.current_index = new_idx
-            snapped = int(self._scan_file_indices[new_idx]) if (self._scan_file_indices is not None and self._scan_file_indices.size > 0) else new_idx
-            self.indexSlider.blockSignals(True)
-            self.indexSpin.blockSignals(True)
-            self.indexSlider.setValue(snapped)
-            self.indexSpin.setValue(snapped)
-            self.indexSlider.blockSignals(False)
-            self.indexSpin.blockSignals(False)
             self._update_pointcloud()
             self._update_images()
             self._update_bev_markers_fast()
+            self._refresh_timeline()
+            if getattr(self, "_pending_range_start", None) is not None and self.timeline is not None and self._scan_file_indices is not None and self._scan_file_indices.size > 0:
+                cur = int(self._scan_file_indices[self.current_index])
+                self.timeline.set_pending_range(self._pending_range_start, cur)
             
     def _on_bev_lidar_clicked(self, li: int):
         if self.scans is None:
@@ -669,16 +968,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if i == self.current_index:
             return
         self.current_index = i
-        snapped = int(self._scan_file_indices[i]) if (self._scan_file_indices is not None and self._scan_file_indices.size > 0) else i
-        self.indexSlider.blockSignals(True)
-        self.indexSpin.blockSignals(True)
-        self.indexSlider.setValue(snapped)
-        self.indexSpin.setValue(snapped)
-        self.indexSlider.blockSignals(False)
-        self.indexSpin.blockSignals(False)
         self._update_pointcloud()
         self._update_images()
         self._update_bev_markers_fast()
+        self._refresh_timeline()
+        if getattr(self, "_pending_range_start", None) is not None and self.timeline is not None and self._scan_file_indices is not None and self._scan_file_indices.size > 0:
+            cur = int(self._scan_file_indices[self.current_index])
+            self.timeline.set_pending_range(self._pending_range_start, cur)
 
     def _on_offset_step_ms(self, delta_ms: int):
         new_val = int(np.clip(self.offset_ms + delta_ms, self.offset_min_ms, self.offset_max_ms))
@@ -693,6 +989,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_pointcloud(force=True)
             self._update_images()
             self._update_bev_markers_fast()
+            self._recompute_auto_marks()
 
     # ---- Data prep ----
     def _prepare_gps_dependent(self):
@@ -842,19 +1139,10 @@ class MainWindow(QtWidgets.QMainWindow):
         total = len(self.scans)
         max_idx = max(0, total - 1)
         cur = int(np.clip(self.current_index, 0, max_idx))
-        actual_min = int(np.min(self._scan_file_indices))
-        actual_max = int(np.max(self._scan_file_indices))
-        self.indexSlider.blockSignals(True)
-        self.indexSpin.blockSignals(True)
-        self.indexSlider.setRange(actual_min, actual_max)
-        self.indexSpin.setRange(actual_min, actual_max)
-        cur_actual = int(self._scan_file_indices[cur])
-        self.indexSlider.setValue(cur_actual)
-        self.indexSpin.setValue(cur_actual)
-        self.indexSlider.blockSignals(False)
-        self.indexSpin.blockSignals(False)
         self.current_index = cur
         self._update_images()
+        if self.timeline is not None:
+            self._refresh_timeline()
 
     def _prepare_pointcloud_support(self):
         try:
@@ -876,7 +1164,53 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.resampled = resample_poses(self.df_gps, target_rate_hz=10.0, verbose=False)
         self._update_images()
-        
+        # recompute auto ranges once GPS is known
+        self._recompute_auto_marks()
+
+    def _recompute_auto_marks(self):
+        if self.df_gps is None or self.scans is None:
+            return
+        gps_t_min = float(self.df_gps["t"].iloc[0])
+        gps_t_max = float(self.df_gps["t"].iloc[-1])
+        lidar_times = np.array([s.t for s in self.scans], dtype=np.float64)
+        lidar_indices = np.array([s.index for s in self.scans], dtype=int)
+        self.marks.recompute_auto_edges(lidar_indices=lidar_indices, lidar_times=lidar_times, gps_t_min=gps_t_min, gps_t_max=gps_t_max, offset_ms=self.offset_ms)
+        self._refresh_timeline()
+        self._save_marks()
+
+    def _handle_marks_on_open_folder(self, root: str):
+        # prompt worker if empty
+        if not self.worker_name:
+            name = self._dark_text_input("Worker name", "Enter worker name (required):", "")
+            if not name:
+                self._warn("Worker", "Worker name is required.")
+                return
+            self.worker_name = name
+            self.marks.set_worker(self.worker_name)
+        self.marks.set_save_root(root)
+        # list candidates
+        cand = MarksManager.list_candidate_jsons(root)
+        if cand:
+            # dark selection dialog
+            items = [os.path.basename(p) for p in cand]
+            sel_name = self._dark_combo_select("Select marks JSON", "Multiple marks found. Choose one:", items)
+            if sel_name:
+                sel = cand[items.index(sel_name)]
+                try:
+                    self.marks.load_from_json(sel)
+                except Exception as e:
+                    QtWidgets.QMessageBox.warning(self, "Marks Error", str(e))
+            else:
+                # user cancelled -> create new
+                self.marks.fixed_timestamp = time.strftime("%Y%m%d_%H%M%S")
+                self._recompute_auto_marks()
+                self._save_marks()
+        else:
+            # create new immediately
+            self.marks.fixed_timestamp = time.strftime("%Y%m%d_%H%M%S")
+            self._recompute_auto_marks()
+            self._save_marks()
+
     def _update_pointcloud(self, force: bool = False):
         # if self.centerStack.currentIndex() != 1 and not force:
         #     return
@@ -960,7 +1294,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if acc.points_xyz is None or acc.points_xyz.size == 0:
             self._plog("no points to render")
             return
-        self.pcView.set_pointcloud(acc.points_xyz)
+        self.pcView.set_pointcloud(acc.points_xyz, color_mode=self.color_mode, intensities=acc.intensities, per_scan_offsets=acc.per_scan_offsets)
         self._plog(f"set_pointcloud total: {(time.perf_counter()-t_gl0)*1000:.1f} ms")
 
         # Markers/polyline

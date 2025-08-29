@@ -39,15 +39,19 @@ class PointCloudView(QtWidgets.QWidget):
         self.view = gl.GLViewWidget()
         self.view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.view.opts["distance"] = 50
-        # Ensure the GL view receives key events and we can intercept them
         self.view.setFocusPolicy(Qt.StrongFocus)
         self.view.setMouseTracking(True)
         self.view.installEventFilter(self)
         self.setFocusProxy(self.view)
 
+        # wrap in a frame to allow reliable border styling
+        self.frame = QtWidgets.QFrame()
+        self.frame.setFrameShape(QtWidgets.QFrame.NoFrame)
+        fl = QtWidgets.QVBoxLayout(self.frame); fl.setContentsMargins(0,0,0,0); fl.addWidget(self.view, 1)
+
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self.view, 1)
+        lay.addWidget(self.frame, 1)
 
         # GL items
         self.cloud_item = None
@@ -60,26 +64,22 @@ class PointCloudView(QtWidgets.QWidget):
         self._has_topdown_set = False
         self._idx_stride = 1
         self._offset_stride_ms = 100
-        # continuous motion params
-        self._pan_speed_ratio = 1.0   # center shift per second as fraction of distance
-        self._zoom_rate_in_per_sec = 0.2  # distance *= 0.65 ** dt
+        self._pan_speed_ratio = 1.0
+        self._zoom_rate_in_per_sec = 0.2
         self._zoom_rate_out_per_sec = 1.0 / self._zoom_rate_in_per_sec
         self._dist_min = 0.05
         self._dist_max = 1e6
 
-        # continuous motion state
-        self._pan_dx = 0  # -1,0,1
-        self._pan_dy = 0  # -1,0,1
-        self._zoom_dir = 0  # -1(out),0,+1(in)
+        self._pan_dx = 0
+        self._pan_dy = 0
+        self._zoom_dir = 0
         self._motion_timer = QtCore.QTimer(self)
-        self._motion_timer.setInterval(16)  # ~60 FPS
+        self._motion_timer.setInterval(16)
         self._motion_timer.timeout.connect(self._on_motion_tick)
         self._last_motion_ts = time.perf_counter()
 
-        # profiling callback (set by MainWindow)
         self.profile_cb: Optional[Callable[[str], None]] = None
 
-        # marker picking/hover state
         self._marker_points = None
         self._marker_ci_vals = None
         self._marker_times = None
@@ -88,7 +88,6 @@ class PointCloudView(QtWidgets.QWidget):
         self._marker_dirs = None
         self._marker_lengths = None
 
-        # focus for key events
         self.setFocusPolicy(Qt.StrongFocus)
         self.setFocus()
 
@@ -479,28 +478,62 @@ class PointCloudView(QtWidgets.QWidget):
         if not self._has_topdown_set:
             self.set_topdown_camera()
 
-    def set_pointcloud(self, xyz: np.ndarray):
+    def set_filter_border(self, enabled: bool):
+        try:
+            if enabled:
+                self.frame.setStyleSheet("QFrame{border:3px solid #ff4d4d;}")
+            else:
+                self.frame.setStyleSheet("")
+        except Exception:
+            pass
+
+    def set_pointcloud(self, xyz: np.ndarray, *, color_mode: str = "default", intensities: Optional[np.ndarray] = None, per_scan_offsets: Optional[List[int]] = None):
         if gl is None:
             return
         if xyz is None or xyz.size == 0:
             return
         t0 = time.perf_counter()
-        z = xyz[:, 2]
-        zmin = float(np.min(z)) if z.size else 0.0
-        zmax = float(np.max(z)) if z.size else 1.0
-        if zmax > zmin:
-            zn = (z - zmin) / (zmax - zmin)
+        colors = None
+        mode = (color_mode or "default").lower()
+        if mode == "intensity" and intensities is not None and intensities.size == xyz.shape[0]:
+            vals = intensities.astype(np.float64)
+            vals = vals[np.isfinite(vals)] if vals.size else vals
+            if vals.size:
+                p1 = float(np.percentile(vals, 1.0))
+                p99 = float(np.percentile(vals, 99.0))
+                span = max(1e-12, p99 - p1)
+                vi = np.clip(intensities, p1, p99)
+                vn = (vi - p1) / span
+            else:
+                vn = np.zeros_like(intensities, dtype=np.float64)
+            rgb = mcolors.hsv_to_rgb(np.stack([(2.0/3.0)*(1.0 - vn), np.ones_like(vn), np.ones_like(vn)], axis=1)).astype(np.float32)
+            colors = np.concatenate([rgb, np.ones((rgb.shape[0], 1), dtype=np.float32)], axis=1)
+        elif mode == "per-scan" and per_scan_offsets is not None and len(per_scan_offsets) > 0:
+            ids = np.zeros(xyz.shape[0], dtype=np.int32)
+            offsets = list(per_scan_offsets) + [xyz.shape[0]]
+            for k in range(len(per_scan_offsets)):
+                ids[offsets[k]:offsets[k+1]] = k
+            if len(per_scan_offsets) > 1:
+                vn = ids.astype(np.float64) / float(len(per_scan_offsets) - 1)
+            else:
+                vn = np.zeros_like(ids, dtype=np.float64)
+            rgb = mcolors.hsv_to_rgb(np.stack([(2.0/3.0)*(1.0 - vn), np.ones_like(vn), np.ones_like(vn)], axis=1)).astype(np.float32)
+            colors = np.concatenate([rgb, np.ones((rgb.shape[0], 1), dtype=np.float32)], axis=1)
         else:
-            zn = np.zeros_like(z)
-        # Vectorized HSV->RGB
-        hues = (2.0 / 3.0) * (1.0 - zn)
-        hsv = np.stack([hues, np.ones_like(hues), np.ones_like(hues)], axis=1)
-        rgb = mcolors.hsv_to_rgb(hsv).astype(np.float32)
-        colors = np.concatenate([rgb, np.ones((rgb.shape[0], 1), dtype=np.float32)], axis=1)
+            z = xyz[:, 2]
+            zmin = float(np.min(z)) if z.size else 0.0
+            zmax = float(np.max(z)) if z.size else 1.0
+            if zmax > zmin:
+                zn = (z - zmin) / (zmax - zmin)
+            else:
+                zn = np.zeros_like(z)
+            hues = (2.0 / 3.0) * (1.0 - zn)
+            hsv = np.stack([hues, np.ones_like(hues), np.ones_like(hues)], axis=1)
+            rgb = mcolors.hsv_to_rgb(hsv).astype(np.float32)
+            colors = np.concatenate([rgb, np.ones((rgb.shape[0], 1), dtype=np.float32)], axis=1)
         if self.profile_cb:
-            self.profile_cb(f"color mapping: {(time.perf_counter()-t0)*1000:.1f} ms for {xyz.shape[0]} pts")
+            self.profile_cb(f"color mapping: {(time.perf_counter()-t0)*1000:.1f} ms for {xyz.shape[0]} pts (mode={mode})")
 
-        # 아주 작게: 픽셀 모드 + 작은 사이즈
         t1 = time.perf_counter()
         sp = gl.GLScatterPlotItem(pos=xyz.astype(np.float32), color=colors, size=1.0, pxMode=True)
         if self.cloud_item is not None:
