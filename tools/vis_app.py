@@ -76,6 +76,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.selected_cov_idx = 0
         self._ci_all_full: Optional[List[np.ndarray]] = None
         self._bev_t_full: Optional[np.ndarray] = None
+        self._bev_thumb_selected_idx: Optional[int] = None
 
         # Controls state
         self.offset_min_ms = -1000.0
@@ -1052,6 +1053,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 current_xy=cur_xy
             )
 
+        # select initial
+        if self.thumb_canvases:
+            self._bev_thumb_selected_idx = 0
+            try:
+                self.thumb_canvases[0].set_selected(True)
+            except Exception:
+                pass
+
     def _current_bev_dot_xy(self) -> Optional[Tuple[float, float]]:
         try:
             if getattr(self, "_bev_x", None) is None or getattr(self, "_bev_y", None) is None:
@@ -1099,6 +1108,16 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.main_canvas.reset_hover()
         self.selected_cov_idx = int(idx)
+
+        # update thumbnail selection border
+        try:
+            if self._bev_thumb_selected_idx is not None and 0 <= self._bev_thumb_selected_idx < len(self.thumb_canvases):
+                self.thumb_canvases[self._bev_thumb_selected_idx].set_selected(False)
+            if 0 <= int(idx) < len(self.thumb_canvases):
+                self.thumb_canvases[int(idx)].set_selected(True)
+                self._bev_thumb_selected_idx = int(idx)
+        except Exception:
+            pass
 
         start_xy = (self._bev_x[0], self._bev_y[0]) if self._bev_x.size > 0 else None
         cur_xy = self._current_bev_dot_xy()
@@ -1187,11 +1206,21 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             self.worker_name = name
             self.marks.set_worker(self.worker_name)
-        self.marks.set_save_root(root)
-        # list candidates
-        cand = MarksManager.list_candidate_jsons(root)
+        # Ask user to choose/save marks directory
+        marks_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select marks directory for JSON", self.save_root_dir or root or "")
+        if not marks_dir:
+            self._warn("Marks", "Marks directory not selected. JSON will not be saved.")
+            return
+        self.save_root_dir = marks_dir
+        self.marks.set_save_root(marks_dir)
+        # use base name from opened data folder for filename pattern
+        try:
+            self.marks.set_base_name(os.path.basename(os.path.normpath(root)))
+        except Exception:
+            pass
+        # load/select/create marks JSON in chosen directory
+        cand = MarksManager.list_candidate_jsons(marks_dir)
         if cand:
-            # dark selection dialog
             items = [os.path.basename(p) for p in cand]
             sel_name = self._dark_combo_select("Select marks JSON", "Multiple marks found. Choose one:", items)
             if sel_name:
@@ -1201,12 +1230,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 except Exception as e:
                     QtWidgets.QMessageBox.warning(self, "Marks Error", str(e))
             else:
-                # user cancelled -> create new
                 self.marks.fixed_timestamp = time.strftime("%Y%m%d_%H%M%S")
                 self._recompute_auto_marks()
                 self._save_marks()
         else:
-            # create new immediately
             self.marks.fixed_timestamp = time.strftime("%Y%m%d_%H%M%S")
             self._recompute_auto_marks()
             self._save_marks()

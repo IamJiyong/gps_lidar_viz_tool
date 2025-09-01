@@ -34,6 +34,21 @@ class BEVClickableCanvas(FigureCanvas):
         self._cbar = None
         # Current marker handle for fast updates
         self._cur_marker = None
+        # Selection state
+        self._selected = False
+
+    def set_selected(self, sel: bool):
+        self._selected = bool(sel)
+        try:
+            if self._selected:
+                for s in self.ax.spines.values():
+                    s.set_color("#ff4d4d"); s.set_linewidth(2.0)
+            else:
+                for s in self.ax.spines.values():
+                    s.set_color("w"); s.set_linewidth(1.0)
+            self.fig.canvas.draw_idle()
+        except Exception:
+            pass
 
     def mousePressEvent(self, event):
         self.clicked.emit(self._idx)
@@ -63,7 +78,7 @@ class BEVClickableCanvas(FigureCanvas):
         self.fig.patch.set_facecolor(self._fig_bg)
         self.ax.set_facecolor(self._ax_bg)
         for spine in self.ax.spines.values():
-            spine.set_color("w")
+            spine.set_color("w"); spine.set_linewidth(1.0)
 
         # 3) plot
         cplot = np.clip(c, 1e-12, None)
@@ -108,6 +123,8 @@ class BEVClickableCanvas(FigureCanvas):
         self._cbar = cb
 
         self.fig.tight_layout(pad=0.5)
+        # apply selection border after plotting
+        self.set_selected(self._selected)
         self.draw()
 
     def update_current_marker(self, current_xy: Optional[Tuple[float, float]]):
@@ -221,9 +238,17 @@ class BEVMainCanvas(BEVClickableCanvas):
                 bbox=dict(boxstyle="round,pad=0.3", fc=self._ax_bg, alpha=0.85, ec="w"),
                 fontsize=12, color="w"
             )
+            try:
+                self._hover_annot.set_zorder(10000)
+            except Exception:
+                pass
         else:
             self._hover_annot.set_text(txt)
             self._hover_annot.xy = (cx, cy)
+            try:
+                self._hover_annot.set_zorder(10000)
+            except Exception:
+                pass
         self.fig.canvas.draw_idle()
 
     def _on_button_press(self, event):
