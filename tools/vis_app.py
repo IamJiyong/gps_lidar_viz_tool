@@ -116,6 +116,18 @@ class MainWindow(QtWidgets.QMainWindow):
             dt = (time.perf_counter() - self._t0_main) * 1000.0
             print(f"[prof] {dt:8.1f} ms | {msg}")
 
+    # simple profiling wrapper
+    def _profile_step(self, name: str, func: Callable, *args, **kwargs):
+        if not self._prof_enabled:
+            return func(*args, **kwargs)
+        t0 = time.perf_counter()
+        out = func(*args, **kwargs)
+        try:
+            self._plog(f"{name}: {(time.perf_counter()-t0)*1000:.1f} ms")
+        except Exception:
+            pass
+        return out
+
     def _build_ui(self):
         toolbar = QtWidgets.QToolBar("Main")
         self.addToolBar(toolbar)
@@ -151,6 +163,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actRemoveRange = QtWidgets.QAction("Remove", self)
         self.actExport = QtWidgets.QAction("Export synced GPS", self)
         # Keep toolbar clean per request: do not add these actions to toolbar
+
+        # Profiling toggle
+        self.actProfiling = QtWidgets.QAction("Profiling", self); self.actProfiling.setCheckable(True); self.actProfiling.setChecked(self._prof_enabled)
+        self.actProfiling.toggled.connect(lambda on: setattr(self, "_prof_enabled", bool(on)))
+        toolbar.addAction(self.actProfiling)
 
         actOpenGps.triggered.connect(self._on_open_gps)
         actOpenLidar.triggered.connect(self._on_open_lidar)
@@ -395,6 +412,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.shortSpace = QtWidgets.QShortcut(QtGui.QKeySequence("Space"), self); self.shortSpace.setContext(Qt.ApplicationShortcut)
         self.shortUndo = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self); self.shortUndo.setContext(Qt.ApplicationShortcut)
         self.shortRedo = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Y"), self); self.shortRedo.setContext(Qt.ApplicationShortcut)
+        self.shortProf = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+P"), self); self.shortProf.setContext(Qt.ApplicationShortcut)
         self.shortA.activated.connect(lambda: self._on_index_step(-self.index_stride))
         self.shortD.activated.connect(lambda: self._on_index_step(+self.index_stride))
         self.shortQ.activated.connect(lambda: self._on_offset_step_ms(-self.offset_stride_ms))
@@ -402,6 +420,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.shortSpace.activated.connect(self._on_space_toggle_range)
         self.shortUndo.activated.connect(self._on_undo)
         self.shortRedo.activated.connect(self._on_redo)
+        self.shortProf.activated.connect(lambda: self.actProfiling.toggle())
 
         # prompt worker after window shows
         QtCore.QTimer.singleShot(0, self._ensure_worker_name)
@@ -906,9 +925,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.indexSpin.blockSignals(True)
             self.indexSpin.setValue(int(val))
             self.indexSpin.blockSignals(False)
-            self._update_pointcloud()
-            self._update_images()
-            self._update_bev_markers_fast()
+            self._profile_step("update_pointcloud", self._update_pointcloud)
+            self._profile_step("update_images", self._update_images)
+            self._profile_step("update_bev_markers_fast", self._update_bev_markers_fast)
             self._refresh_timeline()
             return
         arr = self._scan_file_indices
@@ -918,9 +937,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.indexSpin.blockSignals(True)
         self.indexSpin.setValue(snapped)
         self.indexSpin.blockSignals(False)
-        self._update_pointcloud()
-        self._update_images()
-        self._update_bev_markers_fast()
+        self._profile_step("update_pointcloud", self._update_pointcloud)
+        self._profile_step("update_images", self._update_images)
+        self._profile_step("update_bev_markers_fast", self._update_bev_markers_fast)
         self._refresh_timeline()
 
     def _on_index_spin(self, val: int):
@@ -951,31 +970,34 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_index_step(self, delta: int):
         if self.scans is None:
             return
+        t0 = time.perf_counter()
         new_idx = int(np.clip(self.current_index + delta, 0, len(self.scans) - 1))
         if new_idx != self.current_index:
             self.current_index = new_idx
-            self._update_pointcloud()
-            self._update_images()
-            self._update_bev_markers_fast()
+            self._profile_step("update_pointcloud", self._update_pointcloud)
+            self._profile_step("update_images", self._update_images)
+            self._profile_step("update_bev_markers_fast", self._update_bev_markers_fast)
             self._refresh_timeline()
             if getattr(self, "_pending_range_start", None) is not None and self.timeline is not None and self._scan_file_indices is not None and self._scan_file_indices.size > 0:
                 cur = int(self._scan_file_indices[self.current_index])
                 self.timeline.set_pending_range(self._pending_range_start, cur)
-            
+        if self._prof_enabled:
+            self._plog(f"index_step total: {(time.perf_counter()-t0)*1000:.1f} ms")
+
     def _on_bev_lidar_clicked(self, li: int):
         if self.scans is None:
             return
+        t0 = time.perf_counter()
         i = int(np.clip(int(li), 0, len(self.scans) - 1))
         if i == self.current_index:
             return
         self.current_index = i
-        self._update_pointcloud()
-        self._update_images()
-        self._update_bev_markers_fast()
+        self._profile_step("update_pointcloud", self._update_pointcloud)
+        self._profile_step("update_images", self._update_images)
+        self._profile_step("update_bev_markers_fast", self._update_bev_markers_fast)
         self._refresh_timeline()
-        if getattr(self, "_pending_range_start", None) is not None and self.timeline is not None and self._scan_file_indices is not None and self._scan_file_indices.size > 0:
-            cur = int(self._scan_file_indices[self.current_index])
-            self.timeline.set_pending_range(self._pending_range_start, cur)
+        if self._prof_enabled:
+            self._plog(f"bev_click total: {(time.perf_counter()-t0)*1000:.1f} ms")
 
     def _on_offset_step_ms(self, delta_ms: int):
         new_val = int(np.clip(self.offset_ms + delta_ms, self.offset_min_ms, self.offset_max_ms))
@@ -1455,16 +1477,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # Update main image and thumbnails based on LiDAR time and per-cam offsets
         if self.cam_files is None or self.cam_times is None:
             return
+        t_all0 = time.perf_counter()
         # Determine reference time
         ref_t = None
         if self.scans is not None and len(self.scans) > 0:
-            idx = int(np.clip(self.current_index, 0, len(self.scans) - 1))
-            ref_t = float(self.scans[idx].t)
+            idx = int(np.clip(self.current_index, 0, len(self.scans) - 1)); ref_t = float(self.scans[idx].t)
         elif force_first_if_no_lidar:
             # Use first frame time of cam1
             ref_t = float(self.cam_times[0][0])
         if ref_t is None:
             return
+        t_sel0 = time.perf_counter()
         # Select frame per camera using nearest to (ref_t + offset_i)
         thumbs = {}
         sel_pm = None
@@ -1480,10 +1503,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 thumbs[cam1] = pm
             if cam1 == sel_cam:
                 sel_pm = pm
+        if self._prof_enabled:
+            self._plog(f"update_images select thumbs: {(time.perf_counter()-t_sel0)*1000:.1f} ms")
+        t_ui0 = time.perf_counter()
         # Apply to UI
         self.imagePanel.set_thumbnails(thumbs)
         self.imagePanel.set_selected_cam(sel_cam)
         self.imagePanel.set_main_pixmap(sel_pm)
+        if self._prof_enabled:
+            self._plog(f"update_images UI apply: {(time.perf_counter()-t_ui0)*1000:.1f} ms; total={(time.perf_counter()-t_all0)*1000:.1f} ms")
 
 
 class AspectImageView(QtWidgets.QWidget):
