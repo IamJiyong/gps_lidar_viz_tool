@@ -73,7 +73,12 @@ class CIResult:
 
 
 def compute_ci_arrays(df: pd.DataFrame, cov_cols: List[str] | None = None) -> List[CIResult]:
-    """Convert covariance(variance) columns to 95% CI values per column."""
+    """Convert covariance(variance) columns to 95% CI values per column.
+
+    Assumptions:
+      - Position covariance columns are in m^2 (output in meters)
+      - Orientation covariance columns are in deg^2 (output in degrees)
+    """
     Z95 = 1.959963984540054  # two-sided 95% for Normal
     cols = cov_cols or COV_COLS_DEFAULT
 
@@ -88,7 +93,7 @@ def compute_ci_arrays(df: pd.DataFrame, cov_cols: List[str] | None = None) -> Li
         var = np.clip(var, 0.0, None)
         ci = Z95 * np.sqrt(var)
         if any(k in name for k in ("yaw", "pitch", "roll")):
-            ci = np.degrees(ci)
+            # input variance is deg^2 -> CI already in degrees
             unit = "deg"
         else:
             unit = "m"
