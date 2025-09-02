@@ -26,13 +26,13 @@ from lidar_gnss.pose_utils import build_interpolators, resample_poses
 from lidar_gnss.accumulate import accumulate_lidar_points
 
 # Local UI components
-from bev_canvas import BEVClickableCanvas, BEVMainCanvas
-from pointcloud_view import PointCloudView
-from options_dialog import OptionsDialog
-from image_panel import ImagePanel
-from marks_manager import MarksManager, Interval
-from timeline_bar import TimelineBar, Band
-from export_utils import export_synced_gps
+from .bev_canvas import BEVClickableCanvas, BEVMainCanvas
+from .pointcloud_view import PointCloudView
+from .options_dialog import OptionsDialog
+from .image_panel import ImagePanel
+from .marks_manager import MarksManager, Interval
+from .timeline_bar import TimelineBar, Band
+from .export_utils import export_synced_gps
 
 
 EXTRINSICS_FIXED_PATH = "extrinsics.yaml"
@@ -519,7 +519,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.scans is not None:
             self._prepare_pointcloud_support()
             self._update_pointcloud(force=True)
-            
+
     def _on_index_stride_changed(self, val: int):
         self.index_stride = max(1, int(val))
         self.pcView.set_strides(self.index_stride, int(self.offset_stride_ms))
