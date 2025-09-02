@@ -37,21 +37,21 @@ def export_synced_gps(df_gps: pd.DataFrame, scans: List[LidarScan], offset_ms: f
     excluded: List[int] = []
     for s in scans:
         q_t = float(s.t) + dt
-        if not (t_min <= q_t <= t_max):
-            excluded.append(int(s.index))
-            continue
-        # interpolate pose
+
+        # positions: interp1d가 외삽 허용
         px = float(interps.pos_interp_x([q_t])[0])
         py = float(interps.pos_interp_y([q_t])[0])
         pz = float(interps.pos_interp_z([q_t])[0])
-        q = interps.slerp([q_t]).as_quat()[0]
+
+        # orientation: SLERP는 외삽 불가 → 가장 가까운 끝으로 클램프
+        q_t_clamped = float(np.clip(q_t, t_min, t_max))
+        q = interps.slerp([q_t_clamped]).as_quat()[0]
         q = q / (np.linalg.norm(q) + 1e-12)
-        # find nearest covariance row (hold) — or copy first
-        # Using last valid row's covariances for simplicity
+
         cov_row = df_gps.iloc[-1]
         row = {
             "index": int(s.index),
-            "sec": int(round(float(str(s.t).split('.')[0]))),  # will be overwritten below
+            "sec": int(round(float(str(s.t).split('.')[0]))),
             "nsec": 0,
             "pos_x": px, "pos_y": py, "pos_z": pz,
             "ori_x": float(q[0]), "ori_y": float(q[1]), "ori_z": float(q[2]), "ori_w": float(q[3]),
@@ -68,7 +68,6 @@ def export_synced_gps(df_gps: pd.DataFrame, scans: List[LidarScan], offset_ms: f
             "vel_cov_y": float(cov_row.get("vel_cov_y", 0.0)),
             "vel_cov_z": float(cov_row.get("vel_cov_z", 0.0)),
         }
-        # enforce LiDAR sec/nsec from filename-derived time
         ts = s.t
         sec = int(ts)
         nsec = int(round((ts - sec) * 1e9))

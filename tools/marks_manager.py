@@ -169,10 +169,15 @@ class MarksManager:
         self.manual = self._merge_intervals(self.manual)
 
     # ---------- Auto computation ----------
-    def recompute_auto_edges(self, *, lidar_indices: np.ndarray, lidar_times: np.ndarray, gps_t_min: float, gps_t_max: float, offset_ms: float) -> None:
+    def recompute_auto_edges(self, *, lidar_indices: np.ndarray, lidar_times: np.ndarray, gps_t_min: float, gps_t_max: float, offset_ms: float, mark_out_of_range: bool = False) -> None:
         if lidar_indices.size == 0:
             self.auto = []
             return
+        # 외삽 허용 기본값: 범위 밖 구간을 '무효'로 표시하지 않음
+        if not mark_out_of_range:
+            self.auto = []
+            return
+
         adj = lidar_times - float(offset_ms) * 1e-3
         n = adj.size
         left = 0
@@ -187,7 +192,7 @@ class MarksManager:
         if right < n - 1:
             out.append(Interval(int(lidar_indices[right + 1]), int(lidar_indices[-1]), source="auto"))
         self.auto = self._merge_intervals(out)
-
+        
     # ---------- JSON I/O ----------
     def save(self) -> Optional[str]:
         if not (self.data_root and self.worker):

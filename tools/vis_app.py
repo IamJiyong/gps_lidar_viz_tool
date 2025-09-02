@@ -104,6 +104,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.marks = MarksManager()
         self.timeline: Optional[TimelineBar] = None
         self.color_mode: str = "default"
+        self._allow_marks_save = False
 
         self._build_ui()
 
@@ -470,7 +471,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _dark_combo_select(self, title: str, label: str, items: List[str]) -> Optional[str]:
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle(title)
-        dlg.setStyleSheet("QDialog{background:#000; color:#fff;} QLabel{color:#fff;} QComboBox{background:#000; color:#e6e6e6; border:1px solid #3b3f45;} QPushButton{background:#2b2d31; color:#e6e6e6;}")
+        dlg.setStyleSheet("QDialog{background:#000; color:#fff;} "
+                        "QLabel{color:#fff;} "
+                        "QComboBox{background:#1f2023; color:#e6e6e6; border:1px solid #3b3f45;} "
+                        "QComboBox QAbstractItemView{background:#1f2023; color:#e6e6e6; "
+                        "selection-background-color:#3b3f45; selection-color:#e6e6e6;} "
+                        "QPushButton{background:#2b2d31; color:#e6e6e6;}")
         form = QtWidgets.QFormLayout(dlg)
         form.addRow(QtWidgets.QLabel(label))
         combo = QtWidgets.QComboBox(); combo.addItems(items)
@@ -771,6 +777,8 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
 
     def _save_marks(self):
+        if not getattr(self, "_allow_marks_save", False):
+            return
         if self.save_root_dir is None and self.cam_loaded_root:
             self.save_root_dir = self.cam_loaded_root
         if self.save_root_dir:
@@ -786,6 +794,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # adopt root/worker from file
             self.worker_name = self.marks.worker
             self.save_root_dir = self.marks.data_root
+            self._allow_marks_save = True
             self._refresh_timeline()
             self.statusBar().showMessage(f"Loaded marks: {os.path.basename(path)}", 2000)
         except Exception as e:
@@ -810,16 +819,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.df_gps is None or self.scans is None:
             self._warn("Export", "Load GPS and LiDAR first.")
             return
-        # pre-check: list indices that would be excluded due to out-of-range
+        # 안내: 범위 밖은 외삽 처리
         t_min = float(self.df_gps["t"].iloc[0]); t_max = float(self.df_gps["t"].iloc[-1])
         dt = -float(self.offset_ms) * 1e-3
         times = np.array([s.t for s in self.scans], dtype=np.float64) + dt
         indices = [s.index for s in self.scans]
-        excluded = [int(idx) for idx, t in zip(indices, times) if not (t_min <= t <= t_max)]
-        if excluded:
-            res = self._warn_yes_no("Export Warning", f"{len(excluded)} LiDAR indices are outside GPS range and will be excluded. Continue?")
-            if not res:
-                return
+        out_of_range = [int(idx) for idx, t in zip(indices, times) if not (t_min <= t <= t_max)]
+        if out_of_range:
+            self.statusBar().showMessage(f"{len(out_of_range)} LiDAR indices outside GPS range; extrapolated.", 4000)
         out_csv = os.path.join(self.cam_loaded_root or self.save_root_dir or os.getcwd(), "GPS", "odom_data_synced.csv")
         excluded_after, written = export_synced_gps(self.df_gps, self.scans, self.offset_ms, out_csv)
         if excluded_after:
@@ -1235,30 +1242,33 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.save_root_dir = marks_dir
         self.marks.set_save_root(marks_dir)
-        # use base name from opened data folder for filename pattern
+        self._allow_marks_save = True
         try:
             self.marks.set_base_name(os.path.basename(os.path.normpath(root)))
         except Exception:
             pass
         # load/select/create marks JSON in chosen directory
+        # load/select/create marks JSON in chosen directory
         cand = MarksManager.list_candidate_jsons(marks_dir)
         if cand:
             items = [os.path.basename(p) for p in cand]
-            sel_name = self._dark_combo_select("Select marks JSON", "Multiple marks found. Choose one:", items)
+            items_plus = items + ["<Create new…>"]
+            sel_name = self._dark_combo_select("Select marks JSON", "Multiple marks found. Choose one:", items_plus)
             if sel_name:
-                sel = cand[items.index(sel_name)]
-                try:
-                    self.marks.load_from_json(sel)
-                except Exception as e:
-                    QtWidgets.QMessageBox.warning(self, "Marks Error", str(e))
+                if sel_name == "<Create new…>":
+                    self.marks.fixed_timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    self._recompute_auto_marks()
+                    self._save_marks()
+                else:
+                    sel = cand[items.index(sel_name)]
+                    try:
+                        self.marks.load_from_json(sel)
+                    except Exception as e:
+                        QtWidgets.QMessageBox.warning(self, "Marks Error", str(e))
             else:
                 self.marks.fixed_timestamp = time.strftime("%Y%m%d_%H%M%S")
                 self._recompute_auto_marks()
                 self._save_marks()
-        else:
-            self.marks.fixed_timestamp = time.strftime("%Y%m%d_%H%M%S")
-            self._recompute_auto_marks()
-            self._save_marks()
 
     def _update_pointcloud(self, force: bool = False):
         # if self.centerStack.currentIndex() != 1 and not force:

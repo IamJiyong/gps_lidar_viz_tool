@@ -45,8 +45,6 @@ def accumulate_lidar_points(
 
     for scan in tqdm(scans, desc="Accumulating LiDAR", unit="scan", disable=not verbose):
         t_adj = scan.t + time_offset
-        if t_adj < t_min or t_adj > t_max:
-            continue
 
         try:
             p_map_bl, q_map_bl = evaluate_pose(interps, t_adj)

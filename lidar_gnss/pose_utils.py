@@ -49,6 +49,8 @@ class PoseInterpolators:
     pos_interp_y: Callable[[np.ndarray], np.ndarray]
     pos_interp_z: Callable[[np.ndarray], np.ndarray]
     slerp: Slerp
+    t_min: float
+    t_max: float
 
 
 def build_interpolators(df: pd.DataFrame, verbose: bool) -> PoseInterpolators:
@@ -58,14 +60,15 @@ def build_interpolators(df: pd.DataFrame, verbose: bool) -> PoseInterpolators:
     q = _normalize_quaternions(q)
     q = _enforce_quaternion_sign_continuity(q)
 
-    pos_interp_x = interp1d(t, p[:, 0], kind="linear", bounds_error=True)
-    pos_interp_y = interp1d(t, p[:, 1], kind="linear", bounds_error=True)
-    pos_interp_z = interp1d(t, p[:, 2], kind="linear", bounds_error=True)
+    # allow extrapolation for positions
+    pos_interp_x = interp1d(t, p[:, 0], kind="linear", bounds_error=False, fill_value="extrapolate")
+    pos_interp_y = interp1d(t, p[:, 1], kind="linear", bounds_error=False, fill_value="extrapolate")
+    pos_interp_z = interp1d(t, p[:, 2], kind="linear", bounds_error=False, fill_value="extrapolate")
 
     rot = Rotation.from_quat(q)
     slerp = Slerp(t, rot)
 
-    return PoseInterpolators(pos_interp_x, pos_interp_y, pos_interp_z, slerp)
+    return PoseInterpolators(pos_interp_x, pos_interp_y, pos_interp_z, slerp, float(t[0]), float(t[-1]))
 
 
 @dataclass
@@ -117,7 +120,9 @@ def evaluate_pose(interps: PoseInterpolators, t_query: float) -> Tuple[np.ndarra
             float(interps.pos_interp_z([t_query])[0]),
         ]
     )
-    rot = interps.slerp([t_query])
+    # clamp for orientation slerp (Slerp doesn't extrapolate)
+    tq_rot = float(np.clip(t_query, interps.t_min, interps.t_max))
+    rot = interps.slerp([tq_rot])
     q = rot.as_quat()[0]
     q = q / (np.linalg.norm(q) + 1e-12)
     return p, q
