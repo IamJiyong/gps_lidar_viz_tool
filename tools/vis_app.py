@@ -246,6 +246,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.offsetSpin.setRange(int(self.offset_min_ms), int(self.offset_max_ms))
         self.offsetSpin.setSingleStep(1)
         self.offsetSpin.setSuffix(" ms")
+        self.offsetSpin.editingFinished.connect(self._on_offset_spin_commit)
         self.offsetSpin.setValue(int(self.offset_ms))
         self.offsetSpin.setKeyboardTracking(False)
         self.offsetSpin.lineEdit().returnPressed.connect(self._on_offset_spin_commit)
@@ -503,7 +504,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return int(box.value())
         return None
 
-    # ---- Toolbar actions ----
     def _on_open_gps(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open GPS CSV", "", "CSV Files (*.csv)")
         if not path:
@@ -516,7 +516,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.df_gps = load_gps_csv(path)
 
         self._prepare_gps_dependent()
-    
+        if self.scans is not None:
+            self._prepare_pointcloud_support()
+            self._update_pointcloud(force=True)
+            
     def _on_index_stride_changed(self, val: int):
         self.index_stride = max(1, int(val))
         self.pcView.set_strides(self.index_stride, int(self.offset_stride_ms))
@@ -610,6 +613,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self.df_gps is not None:
             self._prepare_pointcloud_support()
+            self._update_pointcloud(force=True)
 
         # Cameras (restore auto-load)
         cam_root = self._auto_find_cameras(d)
@@ -906,7 +910,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._recompute_auto_marks()
 
     def _on_offset_spin(self, val: int):
-        pass
+        self._on_offset_spin_commit()
 
     def _on_offset_spin_commit(self):
         val = int(self.offsetSpin.value())
