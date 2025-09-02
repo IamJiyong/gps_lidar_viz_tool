@@ -1239,20 +1239,37 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             self.worker_name = name
             self.marks.set_worker(self.worker_name)
-        # Ask user to choose/save marks directory
-        marks_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select marks directory for JSON", self.save_root_dir or root or "")
-        if not marks_dir:
-            self._warn("Marks", "Marks directory not selected. JSON will not be saved.")
+
+        # Ask user to choose only the parent folder for marks output
+        # We will save to: <selected_parent>/<session>_marks_json/gnss_lidar_json
+        parent_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select parent folder for marks JSON (e.g., /output)",
+            self.save_root_dir or root or ""
+        )
+        if not parent_dir:
+            self._warn("Marks", "Parent folder not selected. JSON will not be saved.")
             return
+
+        session_name = os.path.basename(os.path.normpath(root))
+        location_name = os.path.basename(os.path.dirname(os.path.normpath(root)))
+        marks_dir = os.path.join(parent_dir, location_name, f"{session_name}_marks_json", "gnss_lidar_json")
+        try:
+            os.makedirs(marks_dir, exist_ok=True)
+        except Exception as e:
+            self._warn("Marks", f"Failed to create marks directory:\n{marks_dir}\n{e}")
+            return
+
+        # Set save root to the computed marks directory
         self.save_root_dir = marks_dir
         self.marks.set_save_root(marks_dir)
         self._allow_marks_save = True
         try:
-            self.marks.set_base_name(os.path.basename(os.path.normpath(root)))
+            self.marks.set_base_name(session_name)
         except Exception:
             pass
-        # load/select/create marks JSON in chosen directory
-        # load/select/create marks JSON in chosen directory
+
+        # load/select/create marks JSON in the computed directory
         cand = MarksManager.list_candidate_jsons(marks_dir)
         if cand:
             items = [os.path.basename(p) for p in cand]
