@@ -199,7 +199,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.centerStack.addWidget(self.pcView)
 
         # Right panel with vertical splitter: top main BEV plot, bottom thumbnails + controls
-        rightPanel = QtWidgets.QWidget()
+        rightPanel = QtWidgets.QWidget(); self.rightPanel = rightPanel
         rightV = QtWidgets.QVBoxLayout(rightPanel); rightV.setContentsMargins(6,6,6,6); rightV.setSpacing(8)
 
         rightSplit = QtWidgets.QSplitter(Qt.Vertical)
@@ -426,6 +426,31 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # prompt worker after window shows
         QtCore.QTimer.singleShot(0, self._ensure_worker_name)
+
+        # after other actions are created, e.g., near existing menu setup
+        self._view_images_enabled = True
+        self._view_bev_enabled = True
+
+        # Create checkable actions
+        self.actViewImagePanel = QtWidgets.QAction("Image Panel", self)
+        self.actViewImagePanel.setCheckable(True)
+        self.actViewImagePanel.setChecked(True)
+        self.actViewImagePanel.toggled.connect(self._toggle_image_panel)
+
+        self.actViewBevPanel = QtWidgets.QAction("BEV Panel", self)
+        self.actViewBevPanel.setCheckable(True)
+        self.actViewBevPanel.setChecked(True)
+        self.actViewBevPanel.toggled.connect(self._toggle_bev_panel)
+
+        # Add "View" dropdown to the existing toolbar
+        viewBtn = QtWidgets.QToolButton()
+        viewBtn.setText("View")
+        viewBtn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        viewMenu = QtWidgets.QMenu(viewBtn)
+        viewMenu.addAction(self.actViewImagePanel)
+        viewMenu.addAction(self.actViewBevPanel)
+        viewBtn.setMenu(viewMenu)
+        toolbar.addWidget(viewBtn)
 
     # Dark themed message boxes & inputs (declared early for first use)
     def _warn(self, title: str, text: str):
@@ -1129,6 +1154,8 @@ class MainWindow(QtWidgets.QMainWindow):
             )
 
     def _refresh_bev_markers(self):
+        if not getattr(self, "_view_bev_enabled", True):
+            return
         try:
             self._show_bev_idx(int(self.selected_cov_idx))
             self._redraw_thumbnails_with_markers()
@@ -1431,6 +1458,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._plog(f"markers/polyline: {(time.perf_counter()-t_mk0)*1000:.1f} ms")
 
     def _update_bev_markers_fast(self):
+        if not getattr(self, "_view_bev_enabled", True):
+            return
         t0 = time.perf_counter()
         cur_xy = self._current_bev_dot_xy()
         try:
@@ -1510,6 +1539,8 @@ class MainWindow(QtWidgets.QMainWindow):
         return pm
 
     def _update_images(self, force_first_if_no_lidar: bool = False):
+        if not getattr(self, "_view_images_enabled", True):
+            return
         # Update main image and thumbnails based on LiDAR time and per-cam offsets
         if self.cam_files is None or self.cam_times is None:
             return
@@ -1549,6 +1580,46 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._prof_enabled:
             self._plog(f"update_images UI apply: {(time.perf_counter()-t_ui0)*1000:.1f} ms; total={(time.perf_counter()-t_all0)*1000:.1f} ms")
 
+    def _toggle_image_panel(self, checked: bool):
+        self._view_images_enabled = checked
+        try:
+            self.imagePanel.setVisible(checked)
+        except Exception:
+            pass
+        if checked:
+            self._update_images(force_first_if_no_lidar=True)
+
+    def _toggle_bev_panel(self, checked: bool):
+        self._view_bev_enabled = checked
+        try:
+            self.rightPanel.setVisible(checked)
+        except Exception:
+            pass
+
+        # adjust splitter sizes to hide/show the right panel pane
+        try:
+            spl = self.centralWidget()
+            if isinstance(spl, QtWidgets.QSplitter):
+                sizes = spl.sizes()
+                if len(sizes) >= 3:
+                    if not checked:
+                        sizes[2] = 0
+                        spl.setSizes(sizes)
+                    else:
+                        if sizes[2] == 0:
+                            spl.setSizes([420, 900, 480])
+        except Exception:
+            pass
+
+        if checked:
+            try:
+                self._refresh_bev_markers()
+            except Exception:
+                pass
+            try:
+                self._update_bev_markers_fast()
+            except Exception:
+                pass
 
 class AspectImageView(QtWidgets.QWidget):
     def __init__(self, parent=None):
