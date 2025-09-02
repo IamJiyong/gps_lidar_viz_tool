@@ -209,7 +209,10 @@ class PointCloudView(QtWidgets.QWidget):
         if obj is self.view:
             if ev.type() == QtCore.QEvent.MouseMove:
                 if self._marker_points is not None and self._marker_points.size > 0:
-                    pos = ev.pos()
+                    try:
+                        pos = ev.pos()
+                    except Exception:
+                        return False
                     win = self._project_points_to_screen(self._marker_points)
                     if win is None:
                         if self.profile_cb:
@@ -252,7 +255,10 @@ class PointCloudView(QtWidgets.QWidget):
                 return False
             if ev.type() == QtCore.QEvent.MouseButtonPress:
                 if self._marker_points is not None and self._marker_points.size > 0:
-                    pos = ev.pos()
+                    try:
+                        pos = ev.pos()
+                    except Exception:
+                        return False
                     win = self._project_points_to_screen(self._marker_points)
                     if win is None:
                         if self.profile_cb:
@@ -346,6 +352,22 @@ class PointCloudView(QtWidgets.QWidget):
             self._zoom_dir = 0
         self._stop_motion_timer_if_idle()
         super().keyReleaseEvent(ev)
+
+    def fit_to_extent(self, xyz: np.ndarray) -> None:
+        if xyz is None or xyz.size == 0:
+            return
+        ext = np.ptp(xyz, axis=0).astype(float)
+        diag = float(np.linalg.norm(ext) + 1e-6)
+        target_dist = max(5.0, 0.9 * diag)
+        # center stays at origin in our renderer
+        self.view.opts['distance'] = target_dist
+        # Pan ~ 20% of scene diagonal per second when holding Shift+arrows
+        self._pan_speed_ratio = 0.25
+        # Scale zoom and limits with scene size
+        self._dist_min = max(0.01, 1e-3 * diag)
+        self._dist_max = max(target_dist * 50.0, 50.0)
+        self._zoom_rate_in_per_sec = 0.4
+        self._zoom_rate_out_per_sec = 1.0 / self._zoom_rate_in_per_sec
 
     def set_strides(self, idx_stride: int, offset_stride_ms: int):
         self._idx_stride = max(1, int(idx_stride))

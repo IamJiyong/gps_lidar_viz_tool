@@ -26,13 +26,13 @@ from lidar_gnss.pose_utils import build_interpolators, resample_poses
 from lidar_gnss.accumulate import accumulate_lidar_points
 
 # Local UI components
-from .bev_canvas import BEVClickableCanvas, BEVMainCanvas
-from .pointcloud_view import PointCloudView
-from .options_dialog import OptionsDialog
-from .image_panel import ImagePanel
-from .marks_manager import MarksManager, Interval
-from .timeline_bar import TimelineBar, Band
-from .export_utils import export_synced_gps
+from tools.bev_canvas import BEVClickableCanvas, BEVMainCanvas
+from tools.pointcloud_view import PointCloudView
+from tools.options_dialog import OptionsDialog
+from tools.image_panel import ImagePanel
+from tools.marks_manager import MarksManager, Interval
+from tools.timeline_bar import TimelineBar, Band
+from tools.export_utils import export_synced_gps
 
 
 EXTRINSICS_FIXED_PATH = "extrinsics.yaml"
@@ -1358,6 +1358,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._plog("no points to render")
             return
         self.pcView.set_pointcloud(acc.points_xyz, color_mode=self.color_mode, intensities=acc.intensities, per_scan_offsets=acc.per_scan_offsets)
+        # NEW: scale camera + sensitivities to scene size
+        try:
+            self.pcView.fit_to_extent(acc.points_xyz)
+        except Exception:
+            pass
         self._plog(f"set_pointcloud total: {(time.perf_counter()-t_gl0)*1000:.1f} ms")
 
         # Markers/polyline

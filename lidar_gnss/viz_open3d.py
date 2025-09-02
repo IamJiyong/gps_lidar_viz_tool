@@ -259,7 +259,7 @@ def visualize_scene_open3d(
                 vc.set_front(front.tolist())
                 vc.set_up(up.tolist())
                 try:
-                    zoom = float(np.clip(2.0 / (diag + 1e-6), 0.2, 1.5))
+                    zoom = float(np.clip(5.0 / (diag + 1e-6), 0.35, 1.2))
                     vc.set_zoom(zoom)
                 except Exception:
                     pass
