@@ -359,6 +359,7 @@ class PointCloudView(QtWidgets.QWidget):
         ext = np.ptp(xyz, axis=0).astype(float)
         diag = float(np.linalg.norm(ext) + 1e-6)
         target_dist = max(5.0, 0.9 * diag)
+        self._last_target_dist = target_dist
 
         # Scale controls with scene size
         self._pan_speed_ratio = 0.25
@@ -382,6 +383,23 @@ class PointCloudView(QtWidgets.QWidget):
         # top-down (look from +Z towards -Z)
         self.view.setCameraPosition(elevation=90, azimuth=0)
         self._has_topdown_set = True
+
+    def reset_view(self):
+        # Reset to top-down and recenter around origin using last known scene distance.
+        try:
+            import pyqtgraph as pg
+        except Exception:
+            pg = None
+        self.set_topdown_camera()
+        try:
+            self.view.opts['center'] = pg.Vector(0, 0, 0) if pg is not None else (0, 0, 0)
+        except Exception:
+            self.view.opts['center'] = (0, 0, 0)
+        td = getattr(self, "_last_target_dist", None)
+        if td is None:
+            td = float(self.view.opts.get('distance', 50.0))
+        self.view.opts['distance'] = float(np.clip(td, self._dist_min, self._dist_max))
+        self.view.update()
 
     def clear_items(self):
         if gl is None:

@@ -452,6 +452,11 @@ class MainWindow(QtWidgets.QMainWindow):
         viewBtn.setMenu(viewMenu)
         toolbar.addWidget(viewBtn)
 
+        # Reset viewpoint button
+        self.actResetView = QtWidgets.QAction("Reset View", self)
+        self.actResetView.triggered.connect(self._on_reset_view)
+        toolbar.addAction(self.actResetView)
+
     # Dark themed message boxes & inputs (declared early for first use)
     def _warn(self, title: str, text: str):
         m = QtWidgets.QMessageBox(self)
@@ -922,6 +927,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pcView.set_strides(self.index_stride, int(self.offset_stride_ms))
             self._refresh_index_bounds()
             self._update_pointcloud(force=True)
+
+    def _on_reset_view(self):
+        try:
+            self.pcView.reset_view()
+        except Exception:
+            pass
 
     # ---- Control handlers ----
     def _on_offset_slider(self, val: int):
