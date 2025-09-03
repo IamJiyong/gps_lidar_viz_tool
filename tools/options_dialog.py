@@ -11,7 +11,8 @@ class OptionsDialog(QtWidgets.QDialog):
                  cam_offsets_ms=None,
                  worker_name: str = "",
                  save_root_dir: str = "",
-                 color_mode: str = "default"):
+                 color_mode: str = "default",
+                 compute_heading_from_pose: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Options")
         # Dark theme for dialog
@@ -50,6 +51,10 @@ class OptionsDialog(QtWidgets.QDialog):
         self.xRange = QtWidgets.QDoubleSpinBox(); self.xRange.setRange(0.1, 1000.0); self.xRange.setValue(x_range)
         self.yRange = QtWidgets.QDoubleSpinBox(); self.yRange.setRange(0.1, 1000.0); self.yRange.setValue(y_range)
         self.zRange = QtWidgets.QDoubleSpinBox(); self.zRange.setRange(0.1, 1000.0); self.zRange.setValue(z_range)
+
+        # Heading option
+        self.headingFromPose = QtWidgets.QCheckBox("Compute heading from pose")
+        self.headingFromPose.setChecked(bool(compute_heading_from_pose))
 
         # Camera offsets (ms)
         camBox = QtWidgets.QGroupBox("Camera offsets (ms)")
@@ -93,6 +98,7 @@ class OptionsDialog(QtWidgets.QDialog):
         form.addRow("Time offset max (ms)", self.offsetMax)
         form.addRow("Time offset slider step (ms)", self.offsetStep)
         form.addRow("Arrow marker stride", self.markerStride)
+        form.addRow(self.headingFromPose)
         form.addRow(QtWidgets.QLabel("LiDAR merging"))
         form.addRow("max_points (0=disabled)", self.maxPoints)
         form.addRow("max_frames", self.maxFrames)
@@ -132,4 +138,5 @@ class OptionsDialog(QtWidgets.QDialog):
             worker_name=self.workerEdit.text().strip(),
             save_root_dir=self.saveRootEdit.text().strip(),
             color_mode=str(self.colorMode.currentText()),
+            compute_heading_from_pose=bool(self.headingFromPose.isChecked()),
         )

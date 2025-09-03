@@ -227,3 +227,118 @@ def update_heading_from_path(
     if verbose:
         print(f"Recomputed yaw+pitch from path with diff_stride={s} (roll=0).", flush=True)
     return df_out
+
+
+def update_heading_from_path_preserve_roll(
+    df: pd.DataFrame,
+    *,
+    min_speed_mps: float = 0.05,
+    step_epsilon: float = 1e-4,
+    diff_stride: int = 10,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Recompute heading (yaw) and pitch from ENU path deltas while PRESERVING the
+    original per-sample roll. Produces updated quaternions (ori_x/y/z/w).
+
+    - Yaw = atan2(dy, dx)
+    - Pitch = atan2(dz, hypot(dx, dy))
+    - Roll = original roll extracted from the input quaternion
+
+    Motion gating:
+      - If speed (sqrt(vel_x^2+vel_y^2+vel_z^2)) < min_speed_mps, keep original quaternion
+      - If velocity not available, fall back to a tiny step threshold on the path deltas
+
+    Boundary policy:
+      - First/last samples keep original quaternion
+    """
+    required_pos = {"pos_x", "pos_y", "pos_z"}
+    required_ori = {"ori_x", "ori_y", "ori_z", "ori_w"}
+    if not required_pos.issubset(df.columns) or not required_ori.issubset(df.columns):
+        raise ValueError(f"df must contain columns: {sorted(required_pos | required_ori)}")
+
+    # Extract arrays
+    x = df["pos_x"].to_numpy(dtype=np.float64)
+    y = df["pos_y"].to_numpy(dtype=np.float64)
+    z = df["pos_z"].to_numpy(dtype=np.float64)
+    q0 = df[["ori_x", "ori_y", "ori_z", "ori_w"]].to_numpy(dtype=np.float64)
+    q0 = _normalize_quaternions(q0)
+    q0 = _enforce_quaternion_sign_continuity(q0)
+    n = x.size
+    if n < 2:
+        return df.copy()
+
+    # Original angles (for preserving roll, and fallback yaw/pitch)
+    r0 = Rotation.from_quat(q0)
+    # zyx: returns [yaw, pitch, roll]
+    ang0 = r0.as_euler("zyx", degrees=False)
+    yaw0 = ang0[:, 0]
+    pitch0 = ang0[:, 1]
+    roll0 = ang0[:, 2]
+
+    s = int(max(1, diff_stride))
+    dx = np.empty(n, dtype=np.float64)
+    dy = np.empty(n, dtype=np.float64)
+    dz = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        if (i - s) >= 0 and (i + s) < n:
+            dx[i] = 0.5 * (x[i + s] - x[i - s])
+            dy[i] = 0.5 * (y[i + s] - y[i - s])
+            dz[i] = 0.5 * (z[i + s] - z[i - s])
+        elif (i + s) < n:
+            dx[i] = x[i + s] - x[i]
+            dy[i] = y[i + s] - y[i]
+            dz[i] = z[i + s] - z[i]
+        else:
+            dx[i] = x[i] - x[i - s]
+            dy[i] = y[i] - y[i - s]
+            dz[i] = z[i] - z[i - s]
+
+    yaw_new = np.arctan2(dy, dx)
+    horiz = np.hypot(dx, dy)
+    pitch_new = np.arctan2(dz, horiz)
+
+    # Unwrap yaw for continuity
+    yaw_new = np.unwrap(yaw_new)
+
+    # Motion gating using velocity if available; else use step magnitude
+    has_vel = all(c in df.columns for c in ("vel_x", "vel_y", "vel_z"))
+    if has_vel:
+        vx = df["vel_x"].to_numpy(dtype=np.float64)
+        vy = df["vel_y"].to_numpy(dtype=np.float64)
+        vz = df["vel_z"].to_numpy(dtype=np.float64)
+        speed = np.sqrt(vx * vx + vy * vy + vz * vz)
+        moving = speed >= float(min_speed_mps)
+    else:
+        step_3d = np.sqrt(dx * dx + dy * dy + dz * dz)
+        moving = step_3d >= float(step_epsilon)
+
+    # Boundary handling: force keep original for first/last
+    if n >= 1:
+        moving[0] = False
+        moving[-1] = False
+
+    # Blend yaw/pitch: new when moving else original
+    yaw_final = np.where(moving, yaw_new, yaw0)
+    pitch_final = np.where(moving, pitch_new, pitch0)
+    roll_final = roll0  # always preserve original roll
+
+    # Rebuild quaternion from (yaw, pitch, roll)
+    angles = np.stack([yaw_final, pitch_final, roll_final], axis=1)
+    q_new = Rotation.from_euler("zyx", angles, degrees=False).as_quat()
+
+    df_out = df.copy()
+    df_out["ori_x"] = q_new[:, 0]
+    df_out["ori_y"] = q_new[:, 1]
+    df_out["ori_z"] = q_new[:, 2]
+    df_out["ori_w"] = q_new[:, 3]
+    df_out["heading"] = yaw_final
+    df_out["pitch"] = pitch_final
+
+    if verbose:
+        print(
+            f"Recomputed yaw+pitch from path (preserve roll), diff_stride={s}, "
+            f"min_speed_mps={min_speed_mps}, step_eps={step_epsilon}.",
+            flush=True,
+        )
+    return df_out

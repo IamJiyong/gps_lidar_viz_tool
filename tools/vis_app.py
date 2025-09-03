@@ -22,7 +22,7 @@ from lidar_gnss.bev_viz_utils import (
 
 # LiDAR-GNSS pipeline
 from lidar_gnss.io_utils import load_gnss_csv, parse_lidar_directory, load_extrinsics
-from lidar_gnss.pose_utils import build_interpolators, resample_poses
+from lidar_gnss.pose_utils import build_interpolators, resample_poses, update_heading_from_path_preserve_roll
 from lidar_gnss.accumulate import accumulate_lidar_points
 
 # Local UI components
@@ -45,6 +45,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Data/state
         self.df_gps: Optional[pd.DataFrame] = None
+        self.df_gps_active: Optional[pd.DataFrame] = None
+        self.use_pose_heading: bool = False
         self.scans = None
         self._lidar_times: Optional[np.ndarray] = None
         self._scan_file_indices: Optional[np.ndarray] = None
@@ -545,6 +547,11 @@ class MainWindow(QtWidgets.QMainWindow):
             # BEV만이라도 보이게 로버스트 로더
             self.df_gps = load_gps_csv(path)
 
+        # compute active df based on heading toggle
+        try:
+            self._recompute_active_gps_df()
+        except Exception:
+            self.df_gps_active = self.df_gps
         self._prepare_gps_dependent()
         if self.scans is not None:
             self._prepare_pointcloud_support()
@@ -626,6 +633,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.df_gps = load_gnss_csv(csv_path, verbose=False)
             except Exception:
                 self.df_gps = load_gps_csv(csv_path)
+            try:
+                self._recompute_active_gps_df()
+            except Exception:
+                self.df_gps_active = self.df_gps
             self._prepare_gps_dependent()
         else:
             self._warn("Not Found", "Could not find GPS CSV in the selected folder.")
@@ -695,10 +706,20 @@ class MainWindow(QtWidgets.QMainWindow):
             worker_name=self.worker_name,
             save_root_dir=self.save_root_dir or (self.cam_loaded_root or ""),
             color_mode=self.color_mode,
+            compute_heading_from_pose=self.use_pose_heading,
         )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             v = dlg.values()
             self._apply_options_from_values(v)
+            # Rebuild GPS-dependent caches when heading option may change
+            if self.df_gps is not None:
+                try:
+                    self._recompute_active_gps_df()
+                except Exception:
+                    self.df_gps_active = self.df_gps
+                self._prepare_gps_dependent()
+                if self.scans is not None:
+                    self._prepare_pointcloud_support()
             self._update_pointcloud(force=True)
             self._update_pointcloud(force=True)
             self._update_images()
@@ -728,6 +749,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.marks.set_save_root(self.save_root_dir)
         if "color_mode" in v:
             self.color_mode = str(v["color_mode"]) or "default"
+        # Heading toggle
+        if "compute_heading_from_pose" in v:
+            self.use_pose_heading = bool(v["compute_heading_from_pose"])
         self.offsetSlider.blockSignals(True)
         self.offsetSpin.blockSignals(True)
         self.offsetSlider.setRange(int(self.offset_min_ms), int(self.offset_max_ms))
@@ -854,7 +878,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._warn("Export", "Load GPS and LiDAR first.")
             return
         # 안내: 범위 밖은 외삽 처리
-        t_min = float(self.df_gps["t"].iloc[0]); t_max = float(self.df_gps["t"].iloc[-1])
+        df_used_range = self.df_gps_active if self.df_gps_active is not None else self.df_gps
+        t_min = float(df_used_range["t"].iloc[0]); t_max = float(df_used_range["t"].iloc[-1])
         dt = -float(self.offset_ms) * 1e-3
         times = np.array([s.t for s in self.scans], dtype=np.float64) + dt
         indices = [s.index for s in self.scans]
@@ -862,10 +887,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if out_of_range:
             self.statusBar().showMessage(f"{len(out_of_range)} LiDAR indices outside GPS range; extrapolated.", 4000)
         out_csv = os.path.join(self.cam_loaded_root or self.save_root_dir or os.getcwd(), "GPS", "odom_data_synced.csv")
-        excluded_after, written = export_synced_gps(self.df_gps, self.scans, self.offset_ms, out_csv)
+        df_used = self.df_gps_active if self.df_gps_active is not None else self.df_gps
+        excluded_after, written = export_synced_gps(df_used, self.scans, self.offset_ms, out_csv)
         if excluded_after:
             self.statusBar().showMessage(f"Excluded {len(excluded_after)} indices due to range.", 4000)
-        self._info("Export", f"Exported {written} rows to {out_csv}")
+        if self.use_pose_heading:
+            self._info("Export", f"Exported {written} rows to {out_csv}\n(Exported with pose-difference-based heading enabled)")
+        else:
+            self._info("Export", f"Exported {written} rows to {out_csv}")
 
     def _ensure_worker_name(self):
         if self.worker_name:
@@ -1063,9 +1092,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---- Data prep ----
     def _prepare_gps_dependent(self):
-        if self.df_gps is None:
+        df_src = self.df_gps_active if self.df_gps_active is not None else self.df_gps
+        if df_src is None:
             return
-        x_m, y_m, df2 = xy_from_df(self.df_gps, origin_lat=None, origin_lon=None)
+        x_m, y_m, df2 = xy_from_df(df_src, origin_lat=None, origin_lon=None)
         self._bev_x, self._bev_y = select_stride(x_m, y_m, self._bev_stride)
         self._bev_df = df2.reset_index(drop=True)
         self._bev_t = self._bev_df["t"].to_numpy(dtype=np.float64) if "t" in self._bev_df.columns else None
@@ -1129,6 +1159,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.thumb_canvases[0].set_selected(True)
             except Exception:
                 pass
+
+    def _recompute_active_gps_df(self):
+        # Build df_gps_active based on current toggle
+        if self.df_gps is None:
+            self.df_gps_active = None
+            return
+        if getattr(self, "use_pose_heading", False):
+            try:
+                self.df_gps_active = update_heading_from_path_preserve_roll(
+                    self.df_gps,
+                    min_speed_mps=0.05,
+                    step_epsilon=1e-4,
+                    diff_stride=10,
+                    verbose=False,
+                )
+            except Exception:
+                self.df_gps_active = self.df_gps
+        else:
+            self.df_gps_active = self.df_gps
 
     def _current_bev_dot_xy(self) -> Optional[Tuple[float, float]]:
         try:
@@ -1240,28 +1289,30 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             self.extrinsics = np.eye(4, dtype=np.float64)
 
+        df_src = self.df_gps_active if self.df_gps_active is not None else self.df_gps
         try:
-            self.interps = build_interpolators(self.df_gps, verbose=False)
+            self.interps = build_interpolators(df_src, verbose=False)
         except Exception:
             self.interps = None
 
-        p0 = self.df_gps[["pos_x", "pos_y", "pos_z"]].to_numpy(dtype=np.float64)[0]
+        p0 = df_src[["pos_x", "pos_y", "pos_z"]].to_numpy(dtype=np.float64)[0]
         self.origin_shift = -p0
 
-        P = self.df_gps[["pos_x", "pos_y", "pos_z"]].to_numpy(dtype=np.float64)
+        P = df_src[["pos_x", "pos_y", "pos_z"]].to_numpy(dtype=np.float64)
         P = P + self.origin_shift[None, :]
         self.polyline_full = P
 
-        self.resampled = resample_poses(self.df_gps, target_rate_hz=10.0, verbose=False)
+        self.resampled = resample_poses(df_src, target_rate_hz=10.0, verbose=False)
         self._update_images()
         # recompute auto ranges once GPS is known
         self._recompute_auto_marks()
 
     def _recompute_auto_marks(self):
-        if self.df_gps is None or self.scans is None:
+        df_src = self.df_gps_active if self.df_gps_active is not None else self.df_gps
+        if df_src is None or self.scans is None:
             return
-        gps_t_min = float(self.df_gps["t"].iloc[0])
-        gps_t_max = float(self.df_gps["t"].iloc[-1])
+        gps_t_min = float(df_src["t"].iloc[0])
+        gps_t_max = float(df_src["t"].iloc[-1])
         lidar_times = np.array([s.t for s in self.scans], dtype=np.float64)
         lidar_indices = np.array([s.index for s in self.scans], dtype=int)
         self.marks.recompute_auto_edges(lidar_indices=lidar_indices, lidar_times=lidar_times, gps_t_min=gps_t_min, gps_t_max=gps_t_max, offset_ms=self.offset_ms)
@@ -1332,7 +1383,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_pointcloud(self, force: bool = False):
         # if self.centerStack.currentIndex() != 1 and not force:
         #     return
-        if self.df_gps is None or self.scans is None or self.interps is None:
+        if (self.df_gps is None and self.df_gps_active is None) or self.scans is None or self.interps is None:
             return
         try:
             import pyqtgraph.opengl as gl  # runtime guard
@@ -1352,8 +1403,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._plog(f"select scans: {(time.perf_counter()-t_sel0)*1000:.1f} ms | {len(chunk_scans)} scans")
 
         # time bounds
-        t_min = float(self.df_gps["t"].iloc[0])
-        t_max = float(self.df_gps["t"].iloc[-1])
+        df_src = self.df_gps_active if self.df_gps_active is not None else self.df_gps
+        t_min = float(df_src["t"].iloc[0])
+        t_max = float(df_src["t"].iloc[-1])
 
         # GPS-based offset
         gps_offset_s = float(self.offset_ms) * 1e-3
