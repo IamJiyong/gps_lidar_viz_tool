@@ -47,6 +47,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.df_gps: Optional[pd.DataFrame] = None
         self.df_gps_active: Optional[pd.DataFrame] = None
         self.use_pose_heading: bool = False
+        self.heading_mode: str = "yaw_pitch"  # or "yaw_only"
         self.scans = None
         self._lidar_times: Optional[np.ndarray] = None
         self._scan_file_indices: Optional[np.ndarray] = None
@@ -707,6 +708,7 @@ class MainWindow(QtWidgets.QMainWindow):
             save_root_dir=self.save_root_dir or (self.cam_loaded_root or ""),
             color_mode=self.color_mode,
             compute_heading_from_pose=self.use_pose_heading,
+            heading_mode=self.heading_mode,
         )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             v = dlg.values()
@@ -749,9 +751,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.marks.set_save_root(self.save_root_dir)
         if "color_mode" in v:
             self.color_mode = str(v["color_mode"]) or "default"
-        # Heading toggle
+        # Heading toggle and mode
         if "compute_heading_from_pose" in v:
-            self.use_pose_heading = bool(v["compute_heading_from_pose"])
+            self.use_pose_heading = bool(v["compute_heading_from_pose"]) 
+        if "heading_mode" in v and str(v["heading_mode"]) in ("yaw_only", "yaw_pitch"):
+            self.heading_mode = str(v["heading_mode"]) or "yaw_pitch"
         self.offsetSlider.blockSignals(True)
         self.offsetSpin.blockSignals(True)
         self.offsetSlider.setRange(int(self.offset_min_ms), int(self.offset_max_ms))
@@ -1172,6 +1176,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     min_speed_mps=0.05,
                     step_epsilon=1e-4,
                     diff_stride=10,
+                    compute_pitch=(self.heading_mode != "yaw_only"),
                     verbose=False,
                 )
             except Exception:

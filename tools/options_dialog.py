@@ -12,7 +12,8 @@ class OptionsDialog(QtWidgets.QDialog):
                  worker_name: str = "",
                  save_root_dir: str = "",
                  color_mode: str = "default",
-                 compute_heading_from_pose: bool = False):
+                 compute_heading_from_pose: bool = False,
+                 heading_mode: str = "yaw_pitch"):
         super().__init__(parent)
         self.setWindowTitle("Options")
         # Dark theme for dialog
@@ -55,6 +56,15 @@ class OptionsDialog(QtWidgets.QDialog):
         # Heading option
         self.headingFromPose = QtWidgets.QCheckBox("Compute heading from pose")
         self.headingFromPose.setChecked(bool(compute_heading_from_pose))
+        # Heading mode selector (enabled only when headingFromPose is checked)
+        self.headingMode = QtWidgets.QComboBox(); self.headingMode.addItems(["yaw_only", "yaw_pitch"])
+        try:
+            idx = ["yaw_only", "yaw_pitch"].index(heading_mode if heading_mode in ("yaw_only", "yaw_pitch") else "yaw_pitch")
+            self.headingMode.setCurrentIndex(idx)
+        except Exception:
+            pass
+        self.headingMode.setEnabled(bool(compute_heading_from_pose))
+        self.headingFromPose.toggled.connect(self.headingMode.setEnabled)
 
         # Camera offsets (ms)
         camBox = QtWidgets.QGroupBox("Camera offsets (ms)")
@@ -99,6 +109,7 @@ class OptionsDialog(QtWidgets.QDialog):
         form.addRow("Time offset slider step (ms)", self.offsetStep)
         form.addRow("Arrow marker stride", self.markerStride)
         form.addRow(self.headingFromPose)
+        form.addRow("Heading mode", self.headingMode)
         form.addRow(QtWidgets.QLabel("LiDAR merging"))
         form.addRow("max_points (0=disabled)", self.maxPoints)
         form.addRow("max_frames", self.maxFrames)
@@ -139,4 +150,5 @@ class OptionsDialog(QtWidgets.QDialog):
             save_root_dir=self.saveRootEdit.text().strip(),
             color_mode=str(self.colorMode.currentText()),
             compute_heading_from_pose=bool(self.headingFromPose.isChecked()),
+            heading_mode=str(self.headingMode.currentText()),
         )

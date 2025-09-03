@@ -235,6 +235,7 @@ def update_heading_from_path_preserve_roll(
     min_speed_mps: float = 0.05,
     step_epsilon: float = 1e-4,
     diff_stride: int = 10,
+    compute_pitch: bool = True,
     verbose: bool = False,
 ) -> pd.DataFrame:
     """
@@ -318,9 +319,13 @@ def update_heading_from_path_preserve_roll(
         moving[0] = False
         moving[-1] = False
 
-    # Blend yaw/pitch: new when moving else original
+    # Blend yaw: new when moving else original
     yaw_final = np.where(moving, yaw_new, yaw0)
-    pitch_final = np.where(moving, pitch_new, pitch0)
+    # Pitch: either recompute like yaw, or preserve original depending on flag
+    if bool(compute_pitch):
+        pitch_final = np.where(moving, pitch_new, pitch0)
+    else:
+        pitch_final = pitch0
     roll_final = roll0  # always preserve original roll
 
     # Rebuild quaternion from (yaw, pitch, roll)
