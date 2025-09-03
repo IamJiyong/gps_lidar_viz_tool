@@ -13,7 +13,8 @@ class OptionsDialog(QtWidgets.QDialog):
                  save_root_dir: str = "",
                  color_mode: str = "default",
                  compute_heading_from_pose: bool = False,
-                 heading_mode: str = "yaw_pitch"):
+                 heading_mode: str = "yaw_pitch",
+                 yaw_offset_deg: float = 0.0):
         super().__init__(parent)
         self.setWindowTitle("Options")
         # Dark theme for dialog
@@ -66,6 +67,10 @@ class OptionsDialog(QtWidgets.QDialog):
         self.headingMode.setEnabled(bool(compute_heading_from_pose))
         self.headingFromPose.toggled.connect(self.headingMode.setEnabled)
 
+        # Yaw offset (degrees)
+        self.yawOffsetDeg = QtWidgets.QDoubleSpinBox(); self.yawOffsetDeg.setRange(-1800.0, 1800.0); self.yawOffsetDeg.setDecimals(3); self.yawOffsetDeg.setSingleStep(0.1); self.yawOffsetDeg.setValue(float(yaw_offset_deg))
+        # Independent of heading toggle: keep always enabled
+
         # Camera offsets (ms)
         camBox = QtWidgets.QGroupBox("Camera offsets (ms)")
         camForm = QtWidgets.QFormLayout(camBox)
@@ -110,6 +115,7 @@ class OptionsDialog(QtWidgets.QDialog):
         form.addRow("Arrow marker stride", self.markerStride)
         form.addRow(self.headingFromPose)
         form.addRow("Heading mode", self.headingMode)
+        form.addRow("Yaw offset (deg)", self.yawOffsetDeg)
         form.addRow(QtWidgets.QLabel("LiDAR merging"))
         form.addRow("max_points (0=disabled)", self.maxPoints)
         form.addRow("max_frames", self.maxFrames)
@@ -151,4 +157,5 @@ class OptionsDialog(QtWidgets.QDialog):
             color_mode=str(self.colorMode.currentText()),
             compute_heading_from_pose=bool(self.headingFromPose.isChecked()),
             heading_mode=str(self.headingMode.currentText()),
+            yaw_offset_deg=float(self.yawOffsetDeg.value()),
         )

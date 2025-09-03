@@ -22,7 +22,7 @@ from lidar_gnss.bev_viz_utils import (
 
 # LiDAR-GNSS pipeline
 from lidar_gnss.io_utils import load_gnss_csv, parse_lidar_directory, load_extrinsics
-from lidar_gnss.pose_utils import build_interpolators, resample_poses, update_heading_from_path_preserve_roll
+from lidar_gnss.pose_utils import build_interpolators, resample_poses, update_heading_from_path_preserve_roll, apply_yaw_offset_to_quaternions
 from lidar_gnss.accumulate import accumulate_lidar_points
 
 # Local UI components
@@ -48,6 +48,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.df_gps_active: Optional[pd.DataFrame] = None
         self.use_pose_heading: bool = False
         self.heading_mode: str = "yaw_pitch"  # or "yaw_only"
+        self.yaw_offset_deg: float = 0.0
         self.scans = None
         self._lidar_times: Optional[np.ndarray] = None
         self._scan_file_indices: Optional[np.ndarray] = None
@@ -709,6 +710,7 @@ class MainWindow(QtWidgets.QMainWindow):
             color_mode=self.color_mode,
             compute_heading_from_pose=self.use_pose_heading,
             heading_mode=self.heading_mode,
+            yaw_offset_deg=self.yaw_offset_deg,
         )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             v = dlg.values()
@@ -756,6 +758,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.use_pose_heading = bool(v["compute_heading_from_pose"]) 
         if "heading_mode" in v and str(v["heading_mode"]) in ("yaw_only", "yaw_pitch"):
             self.heading_mode = str(v["heading_mode"]) or "yaw_pitch"
+        if "yaw_offset_deg" in v:
+            try:
+                self.yaw_offset_deg = float(v["yaw_offset_deg"]) or 0.0
+            except Exception:
+                self.yaw_offset_deg = 0.0
         self.offsetSlider.blockSignals(True)
         self.offsetSpin.blockSignals(True)
         self.offsetSlider.setRange(int(self.offset_min_ms), int(self.offset_max_ms))
@@ -1177,12 +1184,20 @@ class MainWindow(QtWidgets.QMainWindow):
                     step_epsilon=1e-4,
                     diff_stride=10,
                     compute_pitch=(self.heading_mode != "yaw_only"),
+                    yaw_offset_rad=float(self.yaw_offset_deg) * np.pi / 180.0,
                     verbose=False,
                 )
             except Exception:
                 self.df_gps_active = self.df_gps
         else:
-            self.df_gps_active = self.df_gps
+            # Apply yaw offset to original orientations if any
+            try:
+                self.df_gps_active = apply_yaw_offset_to_quaternions(
+                    self.df_gps,
+                    yaw_offset_rad=float(self.yaw_offset_deg) * np.pi / 180.0,
+                )
+            except Exception:
+                self.df_gps_active = self.df_gps
 
     def _current_bev_dot_xy(self) -> Optional[Tuple[float, float]]:
         try:

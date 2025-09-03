@@ -229,6 +229,35 @@ def update_heading_from_path(
     return df_out
 
 
+def apply_yaw_offset_to_quaternions(
+    df: pd.DataFrame,
+    *,
+    yaw_offset_rad: float,
+) -> pd.DataFrame:
+    """
+    Apply a global yaw offset (radians, Z axis, ENU) to existing quaternions in df.
+    Preserves pitch and roll implicitly via quaternion multiplication.
+    Requires columns ori_x, ori_y, ori_z, ori_w.
+    """
+    required_ori = {"ori_x", "ori_y", "ori_z", "ori_w"}
+    if not required_ori.issubset(df.columns):
+        return df
+    if float(yaw_offset_rad) == 0.0:
+        return df
+    q0 = df[["ori_x", "ori_y", "ori_z", "ori_w"]].to_numpy(dtype=np.float64)
+    q0 = _normalize_quaternions(q0)
+    q0 = _enforce_quaternion_sign_continuity(q0)
+    # Build yaw-only rotation and left-multiply: Rz(offset) * R0
+    yaw_vec = np.full((q0.shape[0],), float(yaw_offset_rad), dtype=np.float64)
+    Rz = Rotation.from_euler("z", yaw_vec, degrees=False)
+    R0 = Rotation.from_quat(q0)
+    Rn = Rz * R0
+    qn = Rn.as_quat()
+    out = df.copy()
+    out["ori_x"], out["ori_y"], out["ori_z"], out["ori_w"] = qn[:, 0], qn[:, 1], qn[:, 2], qn[:, 3]
+    return out
+
+
 def update_heading_from_path_preserve_roll(
     df: pd.DataFrame,
     *,
@@ -236,6 +265,7 @@ def update_heading_from_path_preserve_roll(
     step_epsilon: float = 1e-4,
     diff_stride: int = 10,
     compute_pitch: bool = True,
+    yaw_offset_rad: float = 0.0,
     verbose: bool = False,
 ) -> pd.DataFrame:
     """
@@ -299,8 +329,10 @@ def update_heading_from_path_preserve_roll(
     horiz = np.hypot(dx, dy)
     pitch_new = np.arctan2(dz, horiz)
 
-    # Unwrap yaw for continuity
+    # Unwrap yaw for continuity then apply global offset
     yaw_new = np.unwrap(yaw_new)
+    if float(yaw_offset_rad) != 0.0:
+        yaw_new = yaw_new + float(yaw_offset_rad)
 
     # Motion gating using velocity if available; else use step magnitude
     has_vel = all(c in df.columns for c in ("vel_x", "vel_y", "vel_z"))
