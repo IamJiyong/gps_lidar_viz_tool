@@ -5,7 +5,7 @@ from PyQt5 import QtCore, QtWidgets
 class OptionsDialog(QtWidgets.QDialog):
     reloadRequested = QtCore.pyqtSignal()
     def __init__(self, parent=None, *, offset_min_ms=-1000, offset_max_ms=1000,
-                 offset_slider_step_ms=1, marker_stride=5,
+                 offset_slider_step_ms=1, marker_stride=30,
                  range_enabled=False, x_range=30.0, y_range=30.0, z_range=30.0,
                  max_points=0, max_frames=10, index_interval=1,
                  cam_offsets_ms=None,

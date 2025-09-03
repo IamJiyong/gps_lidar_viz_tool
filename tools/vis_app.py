@@ -92,7 +92,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_index = 0
 
         # Filter/markers
-        self.marker_stride = 5
+        self.marker_stride = 30
         self.range_enabled = False
         self.x_range = np.inf
         self.y_range = np.inf
