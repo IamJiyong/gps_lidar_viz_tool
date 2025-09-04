@@ -7,7 +7,7 @@ class OptionsDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, offset_min_ms=-1000, offset_max_ms=1000,
                  offset_slider_step_ms=1, marker_stride=30,
                  range_enabled=False, x_range=30.0, y_range=30.0, z_range=30.0,
-                 max_points=0, max_frames=10, index_interval=1,
+                 max_points=0, max_frames=10, index_interval=1, prefetch_radius=3,
                  cam_offsets_ms=None,
                  worker_name: str = "",
                  save_root_dir: str = "",
@@ -47,7 +47,7 @@ class OptionsDialog(QtWidgets.QDialog):
         self.maxPoints = QtWidgets.QSpinBox(); self.maxPoints.setRange(0, 1000000000); self.maxPoints.setValue(int(max_points))
         self.maxFrames = QtWidgets.QSpinBox(); self.maxFrames.setRange(1, 100000); self.maxFrames.setValue(int(max_frames))
         self.indexInterval = QtWidgets.QSpinBox(); self.indexInterval.setRange(1, 1000); self.indexInterval.setValue(int(index_interval))
-
+        self.prefetchRadius = QtWidgets.QSpinBox(); self.prefetchRadius.setRange(0, 1000); self.prefetchRadius.setValue(int(prefetch_radius))
         # Range filter
         self.rangeEnable = QtWidgets.QCheckBox("Enable XYZ range filter"); self.rangeEnable.setChecked(bool(range_enabled))
         self.xRange = QtWidgets.QDoubleSpinBox(); self.xRange.setRange(0.1, 1000.0); self.xRange.setValue(x_range)
@@ -120,6 +120,7 @@ class OptionsDialog(QtWidgets.QDialog):
         form.addRow("max_points (0=disabled)", self.maxPoints)
         form.addRow("max_frames", self.maxFrames)
         form.addRow("index_interval", self.indexInterval)
+        form.addRow("prefetch_radius", self.prefetchRadius)
         form.addRow(self.rangeEnable)
         form.addRow("x range (m)", self.xRange)
         form.addRow("y range (m)", self.yRange)
@@ -142,6 +143,7 @@ class OptionsDialog(QtWidgets.QDialog):
             max_points=int(self.maxPoints.value()),
             max_frames=int(self.maxFrames.value()),
             index_interval=int(self.indexInterval.value()),
+            prefetch_radius=int(self.prefetchRadius.value()),
             range_enabled=bool(self.rangeEnable.isChecked()),
             x_range=float(self.xRange.value()), y_range=float(self.yRange.value()), z_range=float(self.zRange.value()),
             cam_offsets_ms=[

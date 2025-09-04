@@ -33,7 +33,7 @@ from tools.image_panel import ImagePanel
 from tools.marks_manager import MarksManager, Interval
 from tools.timeline_bar import TimelineBar, Band
 from tools.export_utils import export_synced_gps
-
+from tools.fast_io_cache import XYZIFileCache, prefetch_ring, try_hook_accumulate
 
 EXTRINSICS_FIXED_PATH = "extrinsics.yaml"
 
@@ -57,6 +57,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resampled = None
         self.polyline_full = None
         self.origin_shift = np.zeros(3, dtype=np.float64)
+
+        self._xyzi_cache = XYZIFileCache(max_items=64, max_bytes_mb=None, workers=(os.cpu_count() or 4))
+        self._prefetch_radius = 3
+        self._lidar_dir: Optional[str] = None
         
         # profiling toggle
         self._prof_enabled = False
@@ -569,6 +573,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.scans = parse_lidar_directory(d)
         self._lidar_times = np.array([s.t for s in self.scans], dtype=np.float64)
+        self._lidar_dir = d
+        try_hook_accumulate(self._xyzi_cache)  # accumulate가 로더 훅을 지원하면 캐시 로더 연결
+        prefetch_ring(self.scans, self.current_index, radius=self._prefetch_radius, base_dir=self._lidar_dir, cache=self._xyzi_cache)
         self._refresh_index_bounds()
         # set default save root if empty
         if self.save_root_dir is None:
@@ -647,6 +654,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if lidar_dir:
             try:
                 self.scans = parse_lidar_directory(lidar_dir)
+                self._lidar_dir = lidar_dir
+                try_hook_accumulate(self._xyzi_cache)
+                prefetch_ring(self.scans, self.current_index, radius=self._prefetch_radius, base_dir=self._lidar_dir, cache=self._xyzi_cache)
                 self._lidar_times = np.array([s.t for s in self.scans], dtype=np.float64)
                 self._refresh_index_bounds()
             except Exception as e:
@@ -704,6 +714,7 @@ class MainWindow(QtWidgets.QMainWindow):
             max_points=self.max_points,
             max_frames=self.max_frames,
             index_interval=self.index_interval,
+            prefetch_radius=self._prefetch_radius,
             cam_offsets_ms=self.cam_offsets_ms.tolist() if isinstance(self.cam_offsets_ms, np.ndarray) else self.cam_offsets_ms,
             worker_name=self.worker_name,
             save_root_dir=self.save_root_dir or (self.cam_loaded_root or ""),
@@ -735,6 +746,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.max_points = int(v["max_points"])
         self.max_frames = int(v["max_frames"])
         self.index_interval = int(v["index_interval"])
+        self._prefetch_radius = max(0, int(v.get("prefetch_radius", self._prefetch_radius)))
         self.range_enabled = bool(v["range_enabled"])
         if self.range_enabled:
             self.x_range = float(v["x_range"]); self.y_range = float(v["y_range"]); self.z_range = float(v["z_range"]) 
@@ -1070,6 +1082,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.timeline.set_pending_range(self._pending_range_start, cur)
         if self._prof_enabled:
             self._plog(f"index_step total: {(time.perf_counter()-t0)*1000:.1f} ms")
+        prefetch_ring(self.scans, self.current_index, radius=self._prefetch_radius, base_dir=self._lidar_dir, cache=self._xyzi_cache)
 
     def _on_bev_lidar_clicked(self, li: int):
         if self.scans is None:
@@ -1085,6 +1098,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_timeline()
         if self._prof_enabled:
             self._plog(f"bev_click total: {(time.perf_counter()-t0)*1000:.1f} ms")
+        prefetch_ring(self.scans, self.current_index, radius=self._prefetch_radius, base_dir=self._lidar_dir, cache=self._xyzi_cache)
 
     def _on_offset_step_ms(self, delta_ms: int):
         new_val = int(np.clip(self.offset_ms + delta_ms, self.offset_min_ms, self.offset_max_ms))
